@@ -110,6 +110,32 @@ func (u *UseCase) List(ctx context.Context) ([]Service, error) {
 	return u.repo.List(ctx, u.workspaceID)
 }
 
+// ReconcileQuickServices clears completed Quick URLs after a control-plane
+// restart. Quick Tunnel URLs belong to an in-memory cloudflared process and
+// cannot be restored from SQLite, so the service must be deployed again.
+func (u *UseCase) ReconcileQuickServices(ctx context.Context) error {
+	items, err := u.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list services for quick reconciliation: %w", err)
+	}
+	for _, item := range items {
+		if item.Mode != ModeQuick || (item.State != StateActive && item.PublicURL == "") {
+			continue
+		}
+		refs := item.RemoteRefs
+		refs.PublicURL = ""
+		if err := u.SetRemoteRefs(ctx, item.ID, refs); err != nil {
+			return fmt.Errorf("clear quick URL for %s: %w", item.ID, err)
+		}
+		if item.State == StateActive {
+			if err := u.SetState(ctx, item.ID, StateDraft); err != nil {
+				return fmt.Errorf("reset quick service %s: %w", item.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
 func (u *UseCase) Get(ctx context.Context, id string) (Service, error) {
 	if strings.TrimSpace(id) == "" {
 		return Service{}, &ValidationError{Field: "id", Message: "must not be empty"}

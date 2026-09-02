@@ -64,6 +64,10 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 		_ = connectors.Close(context.Background())
 		return fmt.Errorf("build deployer: %w", err)
 	}
+	if err := services.ReconcileQuickServices(ctx); err != nil {
+		_ = connectors.Close(context.Background())
+		return fmt.Errorf("reconcile quick services: %w", err)
+	}
 	if err := operations.Recover(ctx, deployer.Resume); err != nil {
 		_ = connectors.Close(context.Background())
 		return fmt.Errorf("recover operations: %w", err)

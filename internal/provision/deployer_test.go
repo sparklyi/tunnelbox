@@ -222,7 +222,7 @@ func TestDeployerPrivateUsesWarpRouteAndSkipsDNS(t *testing.T) {
 	var applications []AccessApplicationSpec
 	tunnel := recordingTunnel{calls: &calls, routes: &routes, privateRoutes: &privateRoutes}
 	access := recordingAccess{calls: &calls, applications: &applications}
-	deployer, err := NewDeployer(services, operations, tunnel, access, recordingDNS{&calls}, recordingConnector{calls: &calls}, recordingOrigin{&calls})
+	deployer, err := NewDeployer(services, operations, tunnel, access, nil, recordingConnector{calls: &calls}, recordingOrigin{&calls})
 	if err != nil {
 		t.Fatalf("new private deployer: %v", err)
 	}
@@ -253,6 +253,31 @@ func TestDeployerPrivateUsesWarpRouteAndSkipsDNS(t *testing.T) {
 	}
 	if loaded.State != service.StateActive || loaded.PrivateRouteID != "route_1" || loaded.DNSRecordID != "" || loaded.PublicURL != "" {
 		t.Fatalf("private service after deploy = %+v", loaded)
+	}
+}
+
+func TestDeployerPublicRequiresDNSAdapter(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Public app", Mode: service.ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: service.AllowEmail, AllowValue: "user@example.com",
+	})
+	defer db.Close()
+
+	var calls []string
+	deployer, err := NewDeployer(services, operations, recordingTunnel{calls: &calls}, recordingAccess{calls: &calls}, nil, recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new public deployer: %v", err)
+	}
+	op, err := deployer.Deploy(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start public deploy: %v", err)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusFailed || current.ErrorCode != "cloudflare_not_configured" {
+		t.Fatalf("public operation = %+v, want missing Cloudflare adapter", current)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("adapters were called before dependency check: %v", calls)
 	}
 }
 

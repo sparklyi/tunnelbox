@@ -131,6 +131,38 @@ func TestUseCaseCreateQuickDoesNotRequireCloudflareOrAccess(t *testing.T) {
 	}
 }
 
+func TestUseCaseReconcileQuickServices(t *testing.T) {
+	repo := newMemoryRepository()
+	useCase := NewUseCase(repo, "workspace")
+	quick := Service{ID: "quick_1", WorkspaceID: "workspace", Mode: ModeQuick, State: StateActive,
+		RemoteRefs: RemoteRefs{PublicURL: "https://old.trycloudflare.com"}}
+	failedQuick := Service{ID: "quick_3", WorkspaceID: "workspace", Mode: ModeQuick, State: StateError,
+		RemoteRefs: RemoteRefs{PublicURL: "https://failed.trycloudflare.com"}}
+	managed := Service{ID: "managed_1", WorkspaceID: "workspace", Mode: ModePrivate, State: StateActive,
+		RemoteRefs: RemoteRefs{TunnelID: "tun_1"}}
+	draft := Service{ID: "quick_2", WorkspaceID: "workspace", Mode: ModeQuick, State: StateDraft}
+	repo.items[quick.ID] = quick
+	repo.items[failedQuick.ID] = failedQuick
+	repo.items[managed.ID] = managed
+	repo.items[draft.ID] = draft
+
+	if err := useCase.ReconcileQuickServices(context.Background()); err != nil {
+		t.Fatalf("reconcile quick services: %v", err)
+	}
+	if got := repo.items[quick.ID]; got.State != StateDraft || got.PublicURL != "" {
+		t.Fatalf("quick service after reconcile = %+v", got)
+	}
+	if got := repo.items[failedQuick.ID]; got.State != StateError || got.PublicURL != "" {
+		t.Fatalf("failed quick service after reconcile = %+v", got)
+	}
+	if got := repo.items[managed.ID]; got.State != StateActive || got.TunnelID != "tun_1" {
+		t.Fatalf("managed service changed during reconcile = %+v", got)
+	}
+	if got := repo.items[draft.ID]; got.State != StateDraft {
+		t.Fatalf("draft quick service changed during reconcile = %+v", got)
+	}
+}
+
 func TestUseCasePrivateRequiresMatchingPrivateOrigin(t *testing.T) {
 	repo := newMemoryRepository()
 	useCase := NewUseCase(repo, "workspace")

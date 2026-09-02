@@ -127,7 +127,7 @@ func (d *Deployer) execute(ctx context.Context, op operation.Operation, item ser
 	if item.Mode != service.ModePrivate && item.Mode != service.ModePublic {
 		return fail(errors.New("unsupported service mode"), "invalid_mode", "service mode is not supported")
 	}
-	if d.tunnel == nil || d.access == nil || d.dns == nil {
+	if d.tunnel == nil || d.access == nil || (item.Mode == service.ModePublic && d.dns == nil) {
 		return fail(errors.New("cloudflare adapters are not configured"), "cloudflare_not_configured", "Cloudflare integration is not configured")
 	}
 
