@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sparklyi/tunnelbox/internal/operation"
@@ -51,6 +53,7 @@ type Dependencies struct {
 	AdminToken string
 	Logger     *slog.Logger
 	Readiness  func(context.Context) error
+	WebDir     string
 }
 
 func NewRouter(deps Dependencies) (*gin.Engine, error) {
@@ -91,6 +94,11 @@ func NewRouter(deps Dependencies) (*gin.Engine, error) {
 	api.DELETE("/services/:id", deleteServiceHandler(deps.Services))
 	api.POST("/services/:id/deploy", deployServiceHandler(deps.Deployer))
 	api.GET("/operations/:id", getOperationHandler(deps.Operations))
+	if webDir := strings.TrimSpace(deps.WebDir); webDir != "" {
+		webDir = filepath.Clean(webDir)
+		router.GET("/", func(c *gin.Context) { c.File(filepath.Join(webDir, "index.html")) })
+		router.Static("/assets", filepath.Join(webDir, "assets"))
+	}
 	return router, nil
 }
 

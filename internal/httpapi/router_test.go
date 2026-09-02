@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +92,24 @@ func TestRouterRequiresBearerTokenAndReturnsRequestID(t *testing.T) {
 	}
 	if body["code"] != "unauthorized" {
 		t.Fatalf("error body = %v", body)
+	}
+}
+
+func TestRouterServesConsoleShellBeforeBearerAuthentication(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>console</html>"), 0o600); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, AdminToken: "secret", WebDir: webDir})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "console") {
+		t.Fatalf("console response = %d %s", response.Code, response.Body.String())
 	}
 }
 

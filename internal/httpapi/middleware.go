@@ -63,7 +63,7 @@ func errorMiddleware() gin.HandlerFunc {
 func authMiddleware(expected string) gin.HandlerFunc {
 	expected = strings.TrimSpace(expected)
 	return func(c *gin.Context) {
-		if expected == "" || c.Request.URL.Path == "/healthz" || c.Request.URL.Path == "/readyz" {
+		if expected == "" || isPublicPath(c.Request.URL.Path) {
 			c.Next()
 			return
 		}
@@ -80,6 +80,10 @@ func authMiddleware(expected string) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func isPublicPath(path string) bool {
+	return path == "/healthz" || path == "/readyz" || path == "/" || path == "/assets" || strings.HasPrefix(path, "/assets/")
 }
 
 func requestID(c *gin.Context) string {

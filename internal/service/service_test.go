@@ -122,6 +122,46 @@ func TestUseCaseUpdateBlocksDeployingService(t *testing.T) {
 	}
 }
 
+func TestUseCaseUpdateBlocksActiveService(t *testing.T) {
+	repo := newMemoryRepository()
+	useCase := NewUseCase(repo, "workspace")
+	item, err := useCase.Create(context.Background(), CreateInput{
+		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: AllowEmail, AllowValue: "user@example.com",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	item.State = StateActive
+	repo.items[item.ID] = item
+	newName := "Changed"
+	if _, err := useCase.Update(context.Background(), item.ID, UpdateInput{Name: &newName}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("update error = %v, want conflict", err)
+	}
+}
+
+func TestUseCaseDeleteBlocksManagedService(t *testing.T) {
+	repo := newMemoryRepository()
+	useCase := NewUseCase(repo, "workspace")
+	item, err := useCase.Create(context.Background(), CreateInput{
+		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: AllowEmail, AllowValue: "user@example.com",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	item.State = StateActive
+	item.TunnelID = "tun_1"
+	repo.items[item.ID] = item
+
+	if err := useCase.Delete(context.Background(), item.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("delete error = %v, want conflict", err)
+	}
+	if _, err := useCase.Get(context.Background(), item.ID); err != nil {
+		t.Fatalf("managed service was deleted: %v", err)
+	}
+}
+
 func TestValidHostname(t *testing.T) {
 	for _, value := range []string{"example.com", "a-1.internal"} {
 		if !validHostname(value) {

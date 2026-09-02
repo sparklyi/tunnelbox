@@ -132,7 +132,7 @@ func (u *UseCase) Update(ctx context.Context, id string, input UpdateInput) (Ser
 	if err != nil {
 		return Service{}, err
 	}
-	if current.State == StateDeploying {
+	if current.State == StateDeploying || current.State == StateActive {
 		return Service{}, ErrConflict
 	}
 	name, hostname, origin, allowType, allowValue := current.Name, current.Hostname, current.OriginURL, current.AllowType, current.AllowValue
@@ -169,7 +169,12 @@ func (u *UseCase) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if current.State == StateDeploying {
+	// A service with a remote reference needs an explicit undeploy workflow
+	// before deletion; removing only the local row would orphan Cloudflare
+	// resources and a managed connector process.
+	if current.State == StateDeploying || current.State == StateActive ||
+		current.TunnelID != "" || current.DNSRecordID != "" ||
+		current.AccessApplicationID != "" || current.AccessPolicyID != "" {
 		return ErrConflict
 	}
 	return u.repo.Delete(ctx, u.workspaceID, id)

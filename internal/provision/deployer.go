@@ -44,7 +44,7 @@ func (d *Deployer) Deploy(ctx context.Context, serviceID string) (operation.Oper
 // restart. The service is read again so remote references saved before the
 // interruption are honored on the next attempt.
 func (d *Deployer) Resume(op operation.Operation) operation.Task {
-	if op.ServiceID == "" {
+	if op.Kind != "deploy" || op.ServiceID == "" {
 		return nil
 	}
 	return func(ctx context.Context, current operation.Operation) error {
@@ -141,6 +141,24 @@ func (d *Deployer) execute(ctx context.Context, op operation.Operation, item ser
 	refs.AccessPolicyID = policy.ID
 	if err := d.services.SetRemoteRefs(ctx, item.ID, refs); err != nil {
 		return fail(err, "service_state_unavailable", "Access policy reference could not be saved")
+	}
+
+	// Access policies are created below an application, but the application
+	// still needs an explicit policy attachment before it is reachable.
+	if err := setStep("access_policy_attach"); err != nil {
+		return err
+	}
+	application, err = d.access.EnsureApplication(ctx, AccessApplicationSpec{
+		ID: refs.AccessApplicationID, Name: item.Name, Domain: item.Hostname, PolicyID: refs.AccessPolicyID,
+	})
+	if err != nil {
+		return fail(err, "access_policy_attach_failed", "Access allow policy could not be attached")
+	}
+	if application.ID != "" {
+		refs.AccessApplicationID = application.ID
+		if err := d.services.SetRemoteRefs(ctx, item.ID, refs); err != nil {
+			return fail(err, "service_state_unavailable", "Access application reference could not be saved")
+		}
 	}
 
 	if err := setStep("dns"); err != nil {

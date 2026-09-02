@@ -36,11 +36,15 @@ func (p recordingTunnel) ApplyWebRoute(context.Context, RouteSpec) error {
 }
 
 type recordingAccess struct {
-	calls *[]string
+	calls     *[]string
+	policyIDs *[]string
 }
 
-func (p recordingAccess) EnsureApplication(context.Context, AccessApplicationSpec) (RemoteRef, error) {
+func (p recordingAccess) EnsureApplication(_ context.Context, spec AccessApplicationSpec) (RemoteRef, error) {
 	*p.calls = append(*p.calls, "application")
+	if p.policyIDs != nil {
+		*p.policyIDs = append(*p.policyIDs, spec.PolicyID)
+	}
 	return RemoteRef{ID: "app_1"}, nil
 }
 
@@ -96,8 +100,9 @@ func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 	}
 
 	var calls []string
+	var policyIDs []string
 	operations := operation.NewManager(store.Operations())
-	deployer, err := NewDeployer(services, operations, recordingTunnel{&calls}, recordingAccess{&calls}, recordingDNS{&calls}, recordingConnector{&calls}, recordingOrigin{&calls})
+	deployer, err := NewDeployer(services, operations, recordingTunnel{&calls}, recordingAccess{calls: &calls, policyIDs: &policyIDs}, recordingDNS{&calls}, recordingConnector{&calls}, recordingOrigin{&calls})
 	if err != nil {
 		t.Fatalf("new deployer: %v", err)
 	}
@@ -124,9 +129,12 @@ func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	expected := []string{"origin", "tunnel", "route", "connector", "health", "application", "policy", "dns"}
+	expected := []string{"origin", "tunnel", "route", "connector", "health", "application", "policy", "application", "dns"}
 	if !reflect.DeepEqual(calls, expected) {
 		t.Fatalf("calls = %v, want %v", calls, expected)
+	}
+	if !reflect.DeepEqual(policyIDs, []string{"", "policy_1"}) {
+		t.Fatalf("application policy ids = %v, want initial and attached policy", policyIDs)
 	}
 	loaded, err := services.Get(context.Background(), item.ID)
 	if err != nil {
@@ -134,5 +142,12 @@ func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 	}
 	if loaded.State != service.StateActive || loaded.TunnelID != "tun_1" || loaded.AccessApplicationID != "app_1" || loaded.AccessPolicyID != "policy_1" || loaded.DNSRecordID != "dns_1" {
 		t.Fatalf("service after deploy = %+v", loaded)
+	}
+}
+
+func TestDeployerResumeRejectsUnsupportedOperation(t *testing.T) {
+	deployer := &Deployer{}
+	if task := deployer.Resume(operation.Operation{Kind: "delete", ServiceID: "svc_1"}); task != nil {
+		t.Fatal("resume returned a task for an unsupported operation kind")
 	}
 }
