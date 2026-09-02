@@ -13,7 +13,7 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type ServiceState = "draft" | "deploying" | "active" | "error";
 type AllowType = "email" | "email_domain";
@@ -166,6 +166,8 @@ function Spinner({ size = 16 }: { size?: number }) {
 
 function App() {
   const [adminToken, setAdminToken] = useState(getStoredToken);
+  const [tokenDraft, setTokenDraft] = useState(adminToken);
+  const adminTokenRef = useRef(adminToken);
   const [integration, setIntegration] = useState<IntegrationStatus>(emptyIntegration);
   const [zones, setZones] = useState<Zone[]>([]);
   const [services, setServices] = useState<Service[]>([]);
@@ -186,15 +188,15 @@ function App() {
       setError("");
       try {
         const [status, servicePayload, connectorPayload] = await Promise.all([
-          request<IntegrationStatus>("/api/v1/integrations/cloudflare/status", adminToken),
-          request<{ services: Service[] }>("/api/v1/services", adminToken),
-          request<{ connectors: Connector[] }>("/api/v1/connectors", adminToken),
+          request<IntegrationStatus>("/api/v1/integrations/cloudflare/status", adminTokenRef.current),
+          request<{ services: Service[] }>("/api/v1/services", adminTokenRef.current),
+          request<{ connectors: Connector[] }>("/api/v1/connectors", adminTokenRef.current),
         ]);
         setIntegration(status);
         setServices(servicePayload.services || []);
         setConnectors(connectorPayload.connectors || []);
         if (status.configured) {
-          const zonePayload = await request<{ zones: Zone[] }>("/api/v1/zones", adminToken);
+          const zonePayload = await request<{ zones: Zone[] }>("/api/v1/zones", adminTokenRef.current);
           setZones(zonePayload.zones || []);
         } else {
           setZones([]);
@@ -212,7 +214,7 @@ function App() {
         setRefreshing(false);
       }
     },
-    [adminToken]
+    []
   );
 
   useEffect(() => {
@@ -256,9 +258,13 @@ function App() {
     }
   }
 
-  function onTokenChange(value: string) {
-    setAdminToken(value);
-    storeToken(value);
+  function applyToken() {
+    const next = tokenDraft.trim();
+    if (next === adminToken) return;
+    adminTokenRef.current = next;
+    setAdminToken(next);
+    storeToken(next);
+    void loadData(true);
   }
 
   return (
@@ -300,8 +306,10 @@ function App() {
               <span className="sr-only">管理员令牌</span>
               <input
                 type="password"
-                value={adminToken}
-                onChange={(event) => onTokenChange(event.target.value)}
+                value={tokenDraft}
+                onChange={(event) => setTokenDraft(event.target.value)}
+                onBlur={applyToken}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); applyToken(); } }}
                 placeholder="管理员令牌"
                 autoComplete="off"
               />
