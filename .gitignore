@@ -1,0 +1,21 @@
+# Binaries and local data
+/bin/
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Frontend output and dependencies
+/web/node_modules/
+/web/dist/
+
+# Local secrets
+*.secret
+*.token
+.env
+.env.*
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
