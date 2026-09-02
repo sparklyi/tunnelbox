@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 func Open(ctx context.Context, path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -50,13 +50,12 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration: %w", err)
-	}
-	defer tx.Rollback()
-
 	if version < 1 {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin migration: %w", err)
+		}
+		defer tx.Rollback()
 		statements := []string{
 			`CREATE TABLE IF NOT EXISTS workspace (
 				id TEXT PRIMARY KEY,
@@ -108,10 +107,33 @@ func migrate(ctx context.Context, db *sql.DB) error {
 				return fmt.Errorf("migration statement: %w", err)
 			}
 		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration: %w", err)
+		}
+		version = 1
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit migration: %w", err)
+	if version < 2 {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin migration: %w", err)
+		}
+		defer tx.Rollback()
+		statements := []string{
+			`ALTER TABLE service ADD COLUMN mode TEXT NOT NULL DEFAULT 'public'`,
+			`ALTER TABLE service ADD COLUMN private_route_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE service ADD COLUMN public_url TEXT NOT NULL DEFAULT ''`,
+			`PRAGMA user_version = 2`,
+		}
+		for _, statement := range statements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("migration statement: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration: %w", err)
+		}
 	}
+
 	return nil
 }

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -60,6 +62,7 @@ type Runtime struct {
 type process struct {
 	cmd       *exec.Cmd
 	spec      provision.ConnectorSpec
+	output    *outputCapture
 	done      chan struct{}
 	waitError error
 	startedAt time.Time
@@ -85,9 +88,8 @@ func (r *Runtime) EnsureRunning(ctx context.Context, spec provision.ConnectorSpe
 	if err := validateSpec(spec); err != nil {
 		return err
 	}
-	tokenPath := filepath.Join(r.dataDir, "tokens", spec.ServiceID+".token")
-	if err := auth.SaveToken(tokenPath, spec.Token); err != nil {
-		return &Error{Code: "connector_token_file_failed", Cause: err}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	r.mu.Lock()
@@ -100,15 +102,27 @@ func (r *Runtime) EnsureRunning(ctx context.Context, spec provision.ConnectorSpe
 			return nil
 		}
 	}
-	cmd := exec.CommandContext(r.ctx, r.binary, "tunnel", "--no-autoupdate", "run", "--token-file", tokenPath)
-	writer := &redactingWriter{logger: r.logger, secret: spec.Token}
+	args := []string{"tunnel", "--no-autoupdate"}
+	if spec.Quick {
+		args = append(args, "--url", spec.OriginURL)
+	} else {
+		tokenPath := filepath.Join(r.dataDir, "tokens", spec.ServiceID+".token")
+		if err := auth.SaveToken(tokenPath, spec.Token); err != nil {
+			r.mu.Unlock()
+			return &Error{Code: "connector_token_file_failed", Cause: err}
+		}
+		args = append(args, "run", "--token-file", tokenPath)
+	}
+	capture := &outputCapture{}
+	writer := &redactingWriter{logger: r.logger, secret: spec.Token, capture: capture}
+	cmd := exec.CommandContext(r.ctx, r.binary, args...)
 	cmd.Stdout = writer
 	cmd.Stderr = writer
 	if err := cmd.Start(); err != nil {
 		r.mu.Unlock()
 		return &Error{Code: "connector_start_failed", Cause: err}
 	}
-	item := &process{cmd: cmd, spec: spec, done: make(chan struct{}), startedAt: time.Now().UTC()}
+	item := &process{cmd: cmd, spec: spec, output: capture, done: make(chan struct{}), startedAt: time.Now().UTC()}
 	r.processes[spec.ServiceID] = item
 	r.mu.Unlock()
 	go r.wait(spec.ServiceID, item)
@@ -130,7 +144,10 @@ func (r *Runtime) wait(serviceID string, item *process) {
 	}
 }
 
-func (r *Runtime) Status(_ context.Context, serviceID string) (provision.ConnectorStatus, error) {
+func (r *Runtime) Status(ctx context.Context, serviceID string) (provision.ConnectorStatus, error) {
+	if err := ctx.Err(); err != nil {
+		return provision.ConnectorStatus{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	item, ok := r.processes[serviceID]
@@ -140,9 +157,16 @@ func (r *Runtime) Status(_ context.Context, serviceID string) (provision.Connect
 	select {
 	case <-item.done:
 		delete(r.processes, serviceID)
-		return provision.ConnectorStatus{ServiceID: serviceID, Message: "process exited"}, nil
+		return provision.ConnectorStatus{ServiceID: serviceID, Mode: connectorMode(item.spec), URL: item.output.URL(), Message: "process exited"}, nil
 	default:
-		return provision.ConnectorStatus{ServiceID: serviceID, Running: true, Healthy: true, Message: "process running"}, nil
+		status := provision.ConnectorStatus{ServiceID: serviceID, Mode: connectorMode(item.spec), Running: true, URL: item.output.URL()}
+		status.Healthy = !item.spec.Quick || status.URL != ""
+		if status.Healthy {
+			status.Message = "process running"
+		} else {
+			status.Message = "waiting for quick tunnel URL"
+		}
+		return status, nil
 	}
 }
 
@@ -157,9 +181,16 @@ func (r *Runtime) List(ctx context.Context) ([]provision.ConnectorStatus, error)
 		select {
 		case <-item.done:
 			delete(r.processes, serviceID)
-			items = append(items, provision.ConnectorStatus{ServiceID: serviceID, Message: "process exited"})
+			items = append(items, provision.ConnectorStatus{ServiceID: serviceID, Mode: connectorMode(item.spec), URL: item.output.URL(), Message: "process exited"})
 		default:
-			items = append(items, provision.ConnectorStatus{ServiceID: serviceID, Running: true, Healthy: true, Message: "process running"})
+			status := provision.ConnectorStatus{ServiceID: serviceID, Mode: connectorMode(item.spec), URL: item.output.URL(), Running: true}
+			status.Healthy = !item.spec.Quick || status.URL != ""
+			if status.Healthy {
+				status.Message = "process running"
+			} else {
+				status.Message = "waiting for quick tunnel URL"
+			}
+			items = append(items, status)
 		}
 	}
 	sort.Slice(items, func(a, b int) bool { return items[a].ServiceID < items[b].ServiceID })
@@ -194,7 +225,9 @@ func (r *Runtime) Stop(ctx context.Context, serviceID string) error {
 	select {
 	case <-item.done:
 		r.mu.Lock()
-		delete(r.processes, serviceID)
+		if current, ok := r.processes[serviceID]; ok && current == item {
+			delete(r.processes, serviceID)
+		}
 		r.mu.Unlock()
 		return nil
 	case <-ctx.Done():
@@ -222,29 +255,90 @@ func (r *Runtime) Close(ctx context.Context) error {
 }
 
 func validateSpec(spec provision.ConnectorSpec) error {
-	if spec.ServiceID == "" || spec.TunnelID == "" || spec.Token == "" {
-		return errors.New("connector service id, tunnel id and token are required")
+	if spec.ServiceID == "" {
+		return errors.New("connector service id is required")
 	}
 	if spec.ServiceID == "." || spec.ServiceID == ".." || strings.ContainsAny(spec.ServiceID, `/\\`) {
 		return errors.New("connector service id is invalid")
+	}
+	if spec.Quick {
+		u, err := url.Parse(spec.OriginURL)
+		if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return errors.New("quick tunnel origin must be an http or https URL")
+		}
+		return nil
+	}
+	if spec.TunnelID == "" || spec.Token == "" {
+		return errors.New("connector tunnel id and token are required")
 	}
 	return nil
 }
 
 type redactingWriter struct {
-	logger *slog.Logger
-	secret string
+	logger  *slog.Logger
+	secret  string
+	capture *outputCapture
 }
 
 func (w *redactingWriter) Write(data []byte) (int, error) {
+	message := string(data)
+	if w.secret != "" {
+		message = strings.ReplaceAll(message, w.secret, "[redacted]")
+	}
+	if w.capture != nil {
+		w.capture.observe(message)
+	}
 	if w.logger == nil {
 		return len(data), nil
 	}
-	message := strings.ReplaceAll(string(data), w.secret, "[redacted]")
 	if strings.TrimSpace(message) != "" {
 		w.logger.Info("cloudflared output", "line", strings.TrimSpace(message))
 	}
 	return len(data), nil
+}
+
+type outputCapture struct {
+	mu      sync.RWMutex
+	url     string
+	pending string
+}
+
+var quickTunnelURL = regexp.MustCompile(`https://[A-Za-z0-9][A-Za-z0-9.-]*\.trycloudflare\.com`)
+
+func (c *outputCapture) observe(message string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	combined := c.pending + message
+	if len(combined) > 16*1024 {
+		combined = combined[len(combined)-(16*1024):]
+	}
+	c.pending = combined
+	match := quickTunnelURL.FindString(combined)
+	if match == "" {
+		return
+	}
+	match = strings.TrimRight(match, ".,;:)]}")
+	u, err := url.Parse(match)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		return
+	}
+	c.url = u.String()
+}
+
+func (c *outputCapture) URL() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.url
+}
+
+func connectorMode(spec provision.ConnectorSpec) string {
+	if spec.Quick {
+		return "quick"
+	}
+	return "managed"
 }
 
 var _ io.Writer = (*redactingWriter)(nil)

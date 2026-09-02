@@ -15,6 +15,7 @@ import (
 )
 
 type createServiceRequest struct {
+	Mode       service.Mode      `json:"mode"`
 	Name       string            `json:"name"`
 	Hostname   string            `json:"hostname"`
 	OriginURL  string            `json:"origin_url"`
@@ -23,6 +24,7 @@ type createServiceRequest struct {
 }
 
 type updateServiceRequest struct {
+	Mode       *service.Mode      `json:"mode"`
 	Name       *string            `json:"name"`
 	Hostname   *string            `json:"hostname"`
 	OriginURL  *string            `json:"origin_url"`
@@ -32,16 +34,19 @@ type updateServiceRequest struct {
 
 type serviceResponse struct {
 	ID                  string            `json:"id"`
+	Mode                service.Mode      `json:"mode"`
 	Name                string            `json:"name"`
-	Hostname            string            `json:"hostname"`
+	Hostname            string            `json:"hostname,omitempty"`
 	OriginURL           string            `json:"origin_url"`
-	AllowType           service.AllowType `json:"allow_type"`
-	AllowValue          string            `json:"allow_value"`
+	AllowType           service.AllowType `json:"allow_type,omitempty"`
+	AllowValue          string            `json:"allow_value,omitempty"`
 	State               service.State     `json:"state"`
 	TunnelID            string            `json:"tunnel_id,omitempty"`
+	PrivateRouteID      string            `json:"private_route_id,omitempty"`
 	DNSRecordID         string            `json:"dns_record_id,omitempty"`
 	AccessApplicationID string            `json:"access_application_id,omitempty"`
 	AccessPolicyID      string            `json:"access_policy_id,omitempty"`
+	PublicURL           string            `json:"public_url,omitempty"`
 	CreatedAt           string            `json:"created_at"`
 	UpdatedAt           string            `json:"updated_at"`
 }
@@ -83,8 +88,10 @@ type zoneResponse struct {
 
 type connectorResponse struct {
 	ServiceID string `json:"service_id"`
+	Mode      string `json:"mode,omitempty"`
 	Running   bool   `json:"running"`
 	Healthy   bool   `json:"healthy"`
+	URL       string `json:"url,omitempty"`
 	Message   string `json:"message,omitempty"`
 }
 
@@ -156,7 +163,7 @@ func listConnectorsHandler(lister ConnectorLister) gin.HandlerFunc {
 		}
 		response := make([]connectorResponse, 0, len(items))
 		for _, item := range items {
-			response = append(response, connectorResponse{ServiceID: item.ServiceID, Running: item.Running, Healthy: item.Healthy, Message: item.Message})
+			response = append(response, connectorResponse{ServiceID: item.ServiceID, Mode: item.Mode, Running: item.Running, Healthy: item.Healthy, URL: item.URL, Message: item.Message})
 		}
 		c.JSON(http.StatusOK, gin.H{"connectors": response})
 	}
@@ -184,7 +191,7 @@ func createServiceHandler(actions ServiceActions) gin.HandlerFunc {
 			return
 		}
 		item, err := actions.Create(c.Request.Context(), service.CreateInput{
-			Name: request.Name, Hostname: request.Hostname, OriginURL: request.OriginURL,
+			Mode: request.Mode, Name: request.Name, Hostname: request.Hostname, OriginURL: request.OriginURL,
 			AllowType: request.AllowType, AllowValue: request.AllowValue,
 		})
 		if err != nil {
@@ -213,7 +220,7 @@ func updateServiceHandler(actions ServiceActions) gin.HandlerFunc {
 			return
 		}
 		item, err := actions.Update(c.Request.Context(), c.Param("id"), service.UpdateInput{
-			Name: request.Name, Hostname: request.Hostname, OriginURL: request.OriginURL,
+			Mode: request.Mode, Name: request.Name, Hostname: request.Hostname, OriginURL: request.OriginURL,
 			AllowType: request.AllowType, AllowValue: request.AllowValue,
 		})
 		if err != nil {
@@ -276,11 +283,22 @@ func decodeJSON(c *gin.Context, target any) bool {
 }
 
 func makeServiceResponse(item service.Service) serviceResponse {
+	mode := item.Mode
+	if mode == "" {
+		mode = service.ModePublic
+	}
+	hostname := item.Hostname
+	if mode == service.ModeQuick {
+		// The repository keeps a compatibility key for the legacy NOT NULL/
+		// unique hostname columns. It is not a user-facing address.
+		hostname = ""
+	}
 	return serviceResponse{
-		ID: item.ID, Name: item.Name, Hostname: item.Hostname, OriginURL: item.OriginURL,
+		ID: item.ID, Mode: mode, Name: item.Name, Hostname: hostname, OriginURL: item.OriginURL,
 		AllowType: item.AllowType, AllowValue: item.AllowValue, State: item.State,
-		TunnelID: item.TunnelID, DNSRecordID: item.DNSRecordID,
+		TunnelID: item.TunnelID, PrivateRouteID: item.PrivateRouteID, DNSRecordID: item.DNSRecordID,
 		AccessApplicationID: item.AccessApplicationID, AccessPolicyID: item.AccessPolicyID,
+		PublicURL: item.PublicURL,
 		CreatedAt: item.CreatedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
 		UpdatedAt: item.UpdatedAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
 	}
@@ -311,7 +329,20 @@ func writeDomainError(c *gin.Context, err error) {
 	var coded provision.CodedError
 	switch {
 	case errors.As(err, &validation):
-		writeError(c, http.StatusBadRequest, "invalid_request", validation.Error())
+		code := "invalid_request"
+		switch validation.Field {
+		case "mode":
+			code = "invalid_mode"
+		case "hostname":
+			if strings.Contains(validation.Message, "private mode") {
+				code = "private_target_invalid"
+			}
+		case "origin_url":
+			if strings.Contains(validation.Message, "private mode") {
+				code = "private_target_invalid"
+			}
+		}
+		writeError(c, statusForCode(code), code, validation.Error())
 	case errors.As(err, &coded):
 		code := safeErrorCode(coded.FailureCode())
 		writeError(c, statusForCode(code), code, messageForCode(code))
@@ -341,11 +372,16 @@ func safeErrorCode(code string) string {
 
 func statusForCode(code string) int {
 	switch code {
-	case "cloudflare_configuration_invalid":
+	case "cloudflare_configuration_invalid", "cloudflare_zone_not_available", "cloudflare_token_inactive":
+		return http.StatusBadRequest
+	case "invalid_mode", "private_target_invalid", "cloudflare_zone_required":
 		return http.StatusBadRequest
 	case "cloudflare_not_configured", "connector_not_running":
 		return http.StatusConflict
-	case "origin_unreachable", "cloudflare_unavailable", "cloudflare_timeout", "connector_start_failed":
+	case "origin_unreachable", "cloudflare_unavailable", "cloudflare_timeout", "connector_start_failed",
+		"quick_tunnel_start_failed", "quick_tunnel_url_unavailable", "private_route_failed",
+		"tunnel_unavailable", "tunnel_route_failed", "access_application_failed", "access_policy_failed",
+		"access_policy_attach_failed", "dns_failed", "connector_unhealthy":
 		return http.StatusBadGateway
 	default:
 		return http.StatusInternalServerError
@@ -360,6 +396,8 @@ func messageForCode(code string) string {
 		return "Cloudflare integration is not configured"
 	case "cloudflare_zone_not_available":
 		return "the selected Cloudflare zone is not available"
+	case "cloudflare_zone_required":
+		return "a Cloudflare zone is required for public mode"
 	case "cloudflare_token_inactive":
 		return "the Cloudflare API token is not active"
 	case "cloudflare_token_path_unconfigured":
@@ -368,6 +406,18 @@ func messageForCode(code string) string {
 		return "connector is not running"
 	case "origin_unreachable":
 		return "origin cannot be reached from connector"
+	case "invalid_mode":
+		return "service mode is not supported"
+	case "private_target_invalid":
+		return "private mode requires a valid private IP target"
+	case "private_route_failed":
+		return "private network route could not be created or updated"
+	case "quick_tunnel_start_failed":
+		return "quick tunnel could not be started"
+	case "quick_tunnel_url_unavailable":
+		return "quick tunnel did not provide a public URL"
+	case "connector_unhealthy":
+		return "connector did not become healthy"
 	default:
 		return "request could not be completed"
 	}

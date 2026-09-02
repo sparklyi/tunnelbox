@@ -24,8 +24,8 @@ func TestRepositoriesRoundTrip(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	item := service.Service{ID: "svc_1", WorkspaceID: "default", Name: "Demo", Hostname: "demo.example.com",
-		OriginURL: "http://127.0.0.1:8080", AllowType: service.AllowEmail, AllowValue: "user@example.com",
+	item := service.Service{ID: "svc_1", WorkspaceID: "default", Name: "Demo", Mode: service.ModePrivate, Hostname: "192.168.1.20",
+		OriginURL: "http://192.168.1.20:8080", AllowType: service.AllowEmail, AllowValue: "user@example.com",
 		State: service.StateDraft, CreatedAt: now, UpdatedAt: now}
 	if err := store.Services().Create(ctx, item); err != nil {
 		t.Fatalf("create service: %v", err)
@@ -34,14 +34,14 @@ func TestRepositoriesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get service: %v", err)
 	}
-	if loaded.ID != item.ID || loaded.Hostname != item.Hostname || !loaded.CreatedAt.Equal(item.CreatedAt) {
+	if loaded.ID != item.ID || loaded.Mode != item.Mode || loaded.Hostname != item.Hostname || !loaded.CreatedAt.Equal(item.CreatedAt) {
 		t.Fatalf("loaded service = %+v", loaded)
 	}
-	if err := store.Services().SetRemoteRefs(ctx, "default", item.ID, service.RemoteRefs{TunnelID: "tun_1", DNSRecordID: "dns_1"}); err != nil {
+	if err := store.Services().SetRemoteRefs(ctx, "default", item.ID, service.RemoteRefs{TunnelID: "tun_1", PrivateRouteID: "route_1", DNSRecordID: "dns_1", PublicURL: "https://preview.example"}); err != nil {
 		t.Fatalf("refs: %v", err)
 	}
 	loaded, err = store.Services().Get(ctx, "default", item.ID)
-	if err != nil || loaded.TunnelID != "tun_1" || loaded.DNSRecordID != "dns_1" {
+	if err != nil || loaded.TunnelID != "tun_1" || loaded.PrivateRouteID != "route_1" || loaded.DNSRecordID != "dns_1" || loaded.PublicURL != "https://preview.example" {
 		t.Fatalf("refs not persisted: item=%+v err=%v", loaded, err)
 	}
 

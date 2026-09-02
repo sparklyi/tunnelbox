@@ -48,7 +48,7 @@ func NewIntegration(ctx context.Context, store SettingsStore, workspaceID, defau
 		tokenPath = strings.TrimSpace(defaultTokenPath)
 	}
 	integration := &Integration{store: store, workspaceID: workspaceID, tokenPath: tokenPath, baseURL: baseURL, httpClient: httpClient}
-	if workspace.AccountID == "" || workspace.ZoneID == "" || tokenPath == "" {
+	if workspace.AccountID == "" || tokenPath == "" {
 		return integration, nil
 	}
 	token, loadErr := auth.LoadToken(tokenPath)
@@ -69,7 +69,7 @@ func (i *Integration) Configure(ctx context.Context, input ConfigureInput) (Inte
 	input.AccountID = strings.TrimSpace(input.AccountID)
 	input.ZoneID = strings.TrimSpace(input.ZoneID)
 	input.Token = strings.TrimSpace(input.Token)
-	if input.AccountID == "" || input.ZoneID == "" || input.Token == "" {
+	if input.AccountID == "" || input.Token == "" {
 		return IntegrationStatus{}, &Error{Code: "cloudflare_configuration_invalid"}
 	}
 	client, err := New(Config{Token: input.Token, AccountID: input.AccountID, ZoneID: input.ZoneID, BaseURL: i.baseURL, HTTPClient: i.httpClient})
@@ -83,19 +83,21 @@ func (i *Integration) Configure(ctx context.Context, input ConfigureInput) (Inte
 	if tokenStatus.Status != "active" {
 		return IntegrationStatus{}, &Error{Code: "cloudflare_token_inactive"}
 	}
-	zones, err := client.Zones(ctx)
-	if err != nil {
-		return IntegrationStatus{}, err
-	}
-	found := false
-	for _, zone := range zones {
-		if zone.ID == input.ZoneID {
-			found = true
-			break
+	if input.ZoneID != "" {
+		zones, err := client.Zones(ctx)
+		if err != nil {
+			return IntegrationStatus{}, err
 		}
-	}
-	if !found {
-		return IntegrationStatus{}, &Error{Code: "cloudflare_zone_not_available"}
+		found := false
+		for _, zone := range zones {
+			if zone.ID == input.ZoneID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return IntegrationStatus{}, &Error{Code: "cloudflare_zone_not_available"}
+		}
 	}
 	if i.tokenPath == "" {
 		return IntegrationStatus{}, &Error{Code: "cloudflare_token_path_unconfigured"}
@@ -172,6 +174,14 @@ func (i *Integration) ApplyWebRoute(ctx context.Context, spec provision.RouteSpe
 		return err
 	}
 	return client.ApplyWebRoute(ctx, spec)
+}
+
+func (i *Integration) EnsurePrivateRoute(ctx context.Context, spec provision.PrivateRouteSpec) (provision.RemoteRef, error) {
+	client, err := i.current()
+	if err != nil {
+		return provision.RemoteRef{}, err
+	}
+	return client.EnsurePrivateRoute(ctx, spec)
 }
 
 func (i *Integration) EnsureApplication(ctx context.Context, spec provision.AccessApplicationSpec) (provision.RemoteRef, error) {

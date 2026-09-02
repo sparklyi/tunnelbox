@@ -27,6 +27,15 @@ const (
 	StateError     State = "error"
 )
 
+// Mode controls how a service is exposed.
+type Mode string
+
+const (
+	ModeQuick   Mode = "quick"
+	ModePrivate Mode = "private"
+	ModePublic  Mode = "public"
+)
+
 type AllowType string
 
 const (
@@ -36,15 +45,18 @@ const (
 
 type RemoteRefs struct {
 	TunnelID            string
+	PrivateRouteID      string
 	DNSRecordID         string
 	AccessApplicationID string
 	AccessPolicyID      string
+	PublicURL           string
 }
 
 type Service struct {
 	ID          string
 	WorkspaceID string
 	Name        string
+	Mode        Mode
 	Hostname    string
 	OriginURL   string
 	AllowType   AllowType
@@ -57,6 +69,7 @@ type Service struct {
 
 type CreateInput struct {
 	Name       string
+	Mode       Mode
 	Hostname   string
 	OriginURL  string
 	AllowType  AllowType
@@ -65,6 +78,7 @@ type CreateInput struct {
 
 type UpdateInput struct {
 	Name       *string
+	Mode       *Mode
 	Hostname   *string
 	OriginURL  *string
 	AllowType  *AllowType
@@ -104,15 +118,30 @@ func (u *UseCase) Get(ctx context.Context, id string) (Service, error) {
 }
 
 func (u *UseCase) Create(ctx context.Context, input CreateInput) (Service, error) {
-	name, hostname, origin, allowType, allowValue, err := normalizeAndValidate(input.Name, input.Hostname, input.OriginURL, input.AllowType, input.AllowValue)
+	mode := normalizeMode(input.Mode)
+	// Requests from the original API omitted mode but supplied a public
+	// hostname and Access condition. Keep those clients on the public path;
+	// an otherwise empty new request defaults to quick mode.
+	if strings.TrimSpace(string(input.Mode)) == "" &&
+		(strings.TrimSpace(input.Hostname) != "" || input.AllowType != "" || strings.TrimSpace(input.AllowValue) != "") {
+		mode = ModePublic
+	}
+	name, hostname, origin, allowType, allowValue, err := normalizeAndValidate(mode, input.Name, input.Hostname, input.OriginURL, input.AllowType, input.AllowValue)
 	if err != nil {
 		return Service{}, err
 	}
+	id := newID("svc")
+	if mode == ModeQuick && hostname == "" {
+		// Keep a non-empty compatibility key for the legacy unique hostname
+		// constraint. This value is never exposed as a public address.
+		hostname = "quick-" + id + ".invalid"
+	}
 	now := u.now().UTC()
 	s := Service{
-		ID:          newID("svc"),
+		ID:          id,
 		WorkspaceID: u.workspaceID,
 		Name:        name,
+		Mode:        mode,
 		Hostname:    hostname,
 		OriginURL:   origin,
 		AllowType:   allowType,
@@ -135,9 +164,16 @@ func (u *UseCase) Update(ctx context.Context, id string, input UpdateInput) (Ser
 	if current.State == StateDeploying || current.State == StateActive {
 		return Service{}, ErrConflict
 	}
+	mode := current.Mode
+	if mode == "" {
+		mode = ModePublic
+	}
 	name, hostname, origin, allowType, allowValue := current.Name, current.Hostname, current.OriginURL, current.AllowType, current.AllowValue
 	if input.Name != nil {
 		name = *input.Name
+	}
+	if input.Mode != nil {
+		mode = *input.Mode
 	}
 	if input.Hostname != nil {
 		hostname = *input.Hostname
@@ -151,11 +187,24 @@ func (u *UseCase) Update(ctx context.Context, id string, input UpdateInput) (Ser
 	if input.AllowValue != nil {
 		allowValue = *input.AllowValue
 	}
-	name, hostname, origin, allowType, allowValue, err = normalizeAndValidate(name, hostname, origin, allowType, allowValue)
+	// Quick services keep a legacy non-empty hostname in SQLite solely for the
+	// old NOT NULL/unique constraint. Treat that sentinel as an empty input when
+	// validating or switching modes.
+	if isQuickPlaceholder(hostname) {
+		hostname = ""
+	}
+	mode = normalizeMode(mode)
+	name, hostname, origin, allowType, allowValue, err = normalizeAndValidate(mode, name, hostname, origin, allowType, allowValue)
 	if err != nil {
 		return Service{}, err
 	}
-	current.Name, current.Hostname, current.OriginURL = name, hostname, origin
+	if mode == ModeQuick && hostname == "" {
+		hostname = current.Hostname
+		if hostname == "" {
+			hostname = "quick-" + current.ID + ".invalid"
+		}
+	}
+	current.Name, current.Mode, current.Hostname, current.OriginURL = name, mode, hostname, origin
 	current.AllowType, current.AllowValue = allowType, allowValue
 	current.UpdatedAt = u.now().UTC()
 	if err := u.repo.Update(ctx, current); err != nil {
@@ -174,7 +223,8 @@ func (u *UseCase) Delete(ctx context.Context, id string) error {
 	// resources and a managed connector process.
 	if current.State == StateDeploying || current.State == StateActive ||
 		current.TunnelID != "" || current.DNSRecordID != "" ||
-		current.AccessApplicationID != "" || current.AccessPolicyID != "" {
+		current.PrivateRouteID != "" || current.AccessApplicationID != "" || current.AccessPolicyID != "" ||
+		current.PublicURL != "" {
 		return ErrConflict
 	}
 	return u.repo.Delete(ctx, u.workspaceID, id)
@@ -203,7 +253,18 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Field, e.Message)
 }
 
-func normalizeAndValidate(name, hostname, origin string, allowType AllowType, allowValue string) (string, string, string, AllowType, string, error) {
+func normalizeMode(mode Mode) Mode {
+	mode = Mode(strings.ToLower(strings.TrimSpace(string(mode))))
+	if mode == "" {
+		return ModeQuick
+	}
+	return mode
+}
+
+func normalizeAndValidate(mode Mode, name, hostname, origin string, allowType AllowType, allowValue string) (string, string, string, AllowType, string, error) {
+	if mode != ModeQuick && mode != ModePrivate && mode != ModePublic {
+		return "", "", "", "", "", &ValidationError{Field: "mode", Message: "must be quick, private or public"}
+	}
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", "", "", "", "", &ValidationError{Field: "name", Message: "must not be empty"}
@@ -212,19 +273,45 @@ func normalizeAndValidate(name, hostname, origin string, allowType AllowType, al
 		return "", "", "", "", "", &ValidationError{Field: "name", Message: "must be at most 120 characters"}
 	}
 	hostname = strings.ToLower(strings.TrimSpace(hostname))
-	if !validHostname(hostname) {
-		return "", "", "", "", "", &ValidationError{Field: "hostname", Message: "must be a valid DNS hostname"}
+	if isQuickPlaceholder(hostname) {
+		hostname = ""
+	}
+	switch mode {
+	case ModeQuick:
+		if hostname != "" {
+			return "", "", "", "", "", &ValidationError{Field: "hostname", Message: "quick mode does not use a hostname"}
+		}
+	case ModePrivate:
+		if !validPrivateIP(hostname) {
+			return "", "", "", "", "", &ValidationError{Field: "hostname", Message: "private mode requires a private IP address"}
+		}
+	case ModePublic:
+		if !validHostname(hostname) {
+			return "", "", "", "", "", &ValidationError{Field: "hostname", Message: "must be a valid DNS hostname"}
+		}
 	}
 	origin = strings.TrimSpace(origin)
 	u, err := url.Parse(origin)
 	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", "", "", "", "", &ValidationError{Field: "origin_url", Message: "must be an http or https URL without credentials"}
 	}
+	if mode == ModePrivate {
+		originIP := net.ParseIP(u.Hostname())
+		if originIP == nil || !originIP.Equal(net.ParseIP(hostname)) {
+			return "", "", "", "", "", &ValidationError{Field: "origin_url", Message: "private mode origin host must match the private IP target"}
+		}
+	}
 	allowType = AllowType(strings.TrimSpace(string(allowType)))
+	allowValue = strings.ToLower(strings.TrimSpace(allowValue))
+	if mode == ModeQuick {
+		if allowType == "" && allowValue == "" {
+			return name, hostname, origin, "", "", nil
+		}
+		return "", "", "", "", "", &ValidationError{Field: "allow_type", Message: "quick mode does not use an Access policy"}
+	}
 	if allowType != AllowEmail && allowType != AllowEmailDomain {
 		return "", "", "", "", "", &ValidationError{Field: "allow_type", Message: "must be email or email_domain"}
 	}
-	allowValue = strings.ToLower(strings.TrimSpace(allowValue))
 	if allowType == AllowEmail {
 		parsed, parseErr := mail.ParseAddress(allowValue)
 		if parseErr != nil || parsed.Address != allowValue || !strings.Contains(allowValue, "@") {
@@ -253,6 +340,18 @@ func validHostname(value string) bool {
 		}
 	}
 	return true
+}
+
+func validPrivateIP(value string) bool {
+	ip := net.ParseIP(strings.TrimSpace(value))
+	if ip == nil || !ip.IsPrivate() {
+		return false
+	}
+	return !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast()
+}
+
+func isQuickPlaceholder(value string) bool {
+	return strings.HasPrefix(value, "quick-svc_") && strings.HasSuffix(value, ".invalid")
 }
 
 func newID(prefix string) string {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -164,8 +165,17 @@ func (c *Client) EnsureTunnel(ctx context.Context, spec provision.TunnelSpec) (p
 }
 
 func (c *Client) ApplyWebRoute(ctx context.Context, spec provision.RouteSpec) error {
-	if spec.TunnelID == "" || spec.Hostname == "" || spec.OriginURL == "" {
-		return errors.New("tunnel id, hostname and origin url are required")
+	if spec.TunnelID == "" {
+		return errors.New("tunnel id is required")
+	}
+	if spec.Private {
+		body := map[string]any{"config": map[string]any{
+			"warp-routing": map[string]any{"enabled": true},
+		}}
+		return c.call(ctx, http.MethodPut, c.accountPath("cfd_tunnel", spec.TunnelID, "configurations"), body, nil)
+	}
+	if spec.Hostname == "" || spec.OriginURL == "" {
+		return errors.New("tunnel hostname and origin url are required")
 	}
 	body := map[string]any{"config": map[string]any{"ingress": []any{
 		map[string]string{"hostname": spec.Hostname, "service": spec.OriginURL},
@@ -174,17 +184,70 @@ func (c *Client) ApplyWebRoute(ctx context.Context, spec provision.RouteSpec) er
 	return c.call(ctx, http.MethodPut, c.accountPath("cfd_tunnel", spec.TunnelID, "configurations"), body, nil)
 }
 
+func (c *Client) EnsurePrivateRoute(ctx context.Context, spec provision.PrivateRouteSpec) (provision.RemoteRef, error) {
+	spec.TunnelID = strings.TrimSpace(spec.TunnelID)
+	spec.Network = strings.TrimSpace(spec.Network)
+	spec.Comment = strings.TrimSpace(spec.Comment)
+	if spec.TunnelID == "" || spec.Network == "" {
+		return provision.RemoteRef{}, errors.New("private route tunnel id and network are required")
+	}
+	if _, _, err := net.ParseCIDR(spec.Network); err != nil {
+		return provision.RemoteRef{}, errors.New("private route network must be a valid CIDR")
+	}
+	body := map[string]any{"network": spec.Network, "tunnel_id": spec.TunnelID, "comment": spec.Comment}
+	path := c.accountPath("teamnet", "routes")
+	method := http.MethodPost
+	if spec.ID != "" {
+		path = c.accountPath("teamnet", "routes", spec.ID)
+		method = http.MethodPatch
+	} else {
+		var existing []privateRouteResult
+		if err := c.call(ctx, http.MethodGet, path+"?per_page=1000", nil, &existing); err != nil {
+			return provision.RemoteRef{}, err
+		}
+		matches := make([]privateRouteResult, 0, len(existing))
+		for _, item := range existing {
+			if item.Network == spec.Network && item.TunnelID == spec.TunnelID && item.DeletedAt == "" {
+				matches = append(matches, item)
+			}
+		}
+		switch len(matches) {
+		case 1:
+			return provision.RemoteRef{ID: matches[0].ID}, nil
+		case 0:
+		default:
+			return provision.RemoteRef{}, &Error{Code: "private_route_conflict"}
+		}
+	}
+	var result privateRouteResult
+	if err := c.call(ctx, method, path, body, &result); err != nil {
+		return provision.RemoteRef{}, err
+	}
+	if result.ID == "" {
+		result.ID = spec.ID
+	}
+	if result.ID == "" {
+		return provision.RemoteRef{}, &Error{Code: "cloudflare_invalid_private_route_response"}
+	}
+	return provision.RemoteRef{ID: result.ID}, nil
+}
+
 func (c *Client) EnsureApplication(ctx context.Context, spec provision.AccessApplicationSpec) (provision.RemoteRef, error) {
 	if spec.Name == "" || spec.Domain == "" {
 		return provision.RemoteRef{}, errors.New("application name and domain are required")
 	}
 	body := map[string]any{
 		"name": spec.Name, "domain": spec.Domain, "type": "self_hosted",
-		"destinations":               []map[string]string{{"type": "public", "uri": spec.Domain}},
 		"session_duration":           "24h",
 		"enable_binding_cookie":      true,
 		"http_only_cookie_attribute": true,
 		"app_launcher_visible":       false,
+	}
+	if spec.Private {
+		body["self_hosted_domains"] = []string{spec.Domain}
+		body["allow_authenticate_via_warp"] = true
+	} else {
+		body["destinations"] = []map[string]string{{"type": "public", "uri": spec.Domain}}
 	}
 	if spec.PolicyID != "" {
 		body["policies"] = []map[string]any{{"id": spec.PolicyID, "precedence": 1}}
@@ -287,7 +350,7 @@ func (c *Client) EnsurePolicy(ctx context.Context, spec provision.AccessPolicySp
 
 func (c *Client) EnsureCNAME(ctx context.Context, spec provision.CNAMESpec) (provision.RemoteRef, error) {
 	if c.zoneID == "" {
-		return provision.RemoteRef{}, errors.New("cloudflare zone id is required")
+		return provision.RemoteRef{}, &Error{Code: "cloudflare_zone_required"}
 	}
 	if spec.Name == "" || spec.Target == "" {
 		return provision.RemoteRef{}, errors.New("cname name and target are required")
@@ -352,6 +415,13 @@ type dnsRecordResult struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
 	Type    string `json:"type"`
+}
+
+type privateRouteResult struct {
+	ID        string `json:"id"`
+	Network   string `json:"network"`
+	TunnelID  string `json:"tunnel_id"`
+	DeletedAt string `json:"deleted_at"`
 }
 
 func (c *Client) call(ctx context.Context, method, path string, body any, result any) error {

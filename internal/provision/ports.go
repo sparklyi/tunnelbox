@@ -25,6 +25,14 @@ type RouteSpec struct {
 	TunnelID  string
 	Hostname  string
 	OriginURL string
+	Private   bool
+}
+
+type PrivateRouteSpec struct {
+	ID       string
+	Network  string
+	TunnelID string
+	Comment  string
 }
 
 type AccessApplicationSpec struct {
@@ -32,6 +40,7 @@ type AccessApplicationSpec struct {
 	Name     string
 	Domain   string
 	PolicyID string
+	Private  bool
 }
 
 type AccessPolicySpec struct {
@@ -57,12 +66,16 @@ type ConnectorSpec struct {
 	ServiceID string
 	TunnelID  string
 	Token     string
+	OriginURL string
+	Quick     bool
 }
 
 type ConnectorStatus struct {
 	ServiceID string
+	Mode      string
 	Running   bool
 	Healthy   bool
+	URL       string
 	Message   string
 }
 
@@ -106,6 +119,7 @@ type ConnectorLister interface {
 type TunnelPort interface {
 	EnsureTunnel(context.Context, TunnelSpec) (RemoteTunnel, error)
 	ApplyWebRoute(context.Context, RouteSpec) error
+	EnsurePrivateRoute(context.Context, PrivateRouteSpec) (RemoteRef, error)
 }
 
 type AccessPort interface {
