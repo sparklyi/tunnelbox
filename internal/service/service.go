@@ -213,13 +213,20 @@ func (u *UseCase) Update(ctx context.Context, id string, input UpdateInput) (Ser
 	if input.AllowValue != nil {
 		allowValue = *input.AllowValue
 	}
+	currentMode := current.Mode
+	if currentMode == "" {
+		currentMode = ModePublic
+	}
+	mode = normalizeMode(mode)
+	if mode != currentMode && hasRemoteRefs(current.RemoteRefs) {
+		return Service{}, ErrConflict
+	}
 	// Quick services keep a legacy non-empty hostname in SQLite solely for the
 	// old NOT NULL/unique constraint. Treat that sentinel as an empty input when
 	// validating or switching modes.
 	if isQuickPlaceholder(hostname) {
 		hostname = ""
 	}
-	mode = normalizeMode(mode)
 	name, hostname, origin, allowType, allowValue, err = normalizeAndValidate(mode, name, hostname, origin, allowType, allowValue)
 	if err != nil {
 		return Service{}, err
@@ -247,13 +254,15 @@ func (u *UseCase) Delete(ctx context.Context, id string) error {
 	// A service with a remote reference needs an explicit undeploy workflow
 	// before deletion; removing only the local row would orphan Cloudflare
 	// resources and a managed connector process.
-	if current.State == StateDeploying || current.State == StateActive ||
-		current.TunnelID != "" || current.DNSRecordID != "" ||
-		current.PrivateRouteID != "" || current.AccessApplicationID != "" || current.AccessPolicyID != "" ||
-		current.PublicURL != "" {
+	if current.State == StateDeploying || current.State == StateActive || hasRemoteRefs(current.RemoteRefs) {
 		return ErrConflict
 	}
 	return u.repo.Delete(ctx, u.workspaceID, id)
+}
+
+func hasRemoteRefs(refs RemoteRefs) bool {
+	return refs.TunnelID != "" || refs.PrivateRouteID != "" || refs.DNSRecordID != "" ||
+		refs.AccessApplicationID != "" || refs.AccessPolicyID != "" || refs.PublicURL != ""
 }
 
 func (u *UseCase) SetState(ctx context.Context, id string, state State) error {

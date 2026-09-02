@@ -224,6 +224,35 @@ func TestUseCaseUpdateBlocksActiveService(t *testing.T) {
 	}
 }
 
+func TestUseCaseUpdateBlocksModeChangeWithRemoteRefs(t *testing.T) {
+	repo := newMemoryRepository()
+	useCase := NewUseCase(repo, "workspace")
+	item, err := useCase.Create(context.Background(), CreateInput{
+		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: AllowEmail, AllowValue: "user@example.com",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	item.State = StateError
+	item.RemoteRefs = RemoteRefs{TunnelID: "tun_1", DNSRecordID: "dns_1"}
+	repo.items[item.ID] = item
+
+	for _, mode := range []Mode{ModeQuick, ModePrivate} {
+		_, err := useCase.Update(context.Background(), item.ID, UpdateInput{Mode: &mode})
+		if !errors.Is(err, ErrConflict) {
+			t.Fatalf("mode %q update error = %v, want conflict", mode, err)
+		}
+	}
+	loaded, err := useCase.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("get after rejected mode change: %v", err)
+	}
+	if loaded.Mode != ModePublic || loaded.TunnelID != "tun_1" || loaded.DNSRecordID != "dns_1" {
+		t.Fatalf("service changed after rejected mode change: %+v", loaded)
+	}
+}
+
 func TestUseCaseDeleteBlocksManagedService(t *testing.T) {
 	repo := newMemoryRepository()
 	useCase := NewUseCase(repo, "workspace")
