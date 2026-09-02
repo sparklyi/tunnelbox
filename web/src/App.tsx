@@ -1,9 +1,12 @@
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import {
+  ArrowRight,
   Check,
   ChevronDown,
   CircleAlert,
+  CircleHelp,
   Cloud,
+  ExternalLink,
   LoaderCircle,
   LockKeyhole,
   Plus,
@@ -121,6 +124,25 @@ function storeToken(token: string) {
   }
 }
 
+const onboardingStorageKey = "tunnelbox.onboarding.dismissed";
+
+function hasDismissedOnboarding() {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(onboardingStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function rememberOnboardingDismissed() {
+  try {
+    window.localStorage.setItem(onboardingStorageKey, "1");
+  } catch {
+    // Local storage can be unavailable in locked-down browsers.
+  }
+}
+
 function formatTime(value?: string) {
   if (!value) return "-";
   const date = new Date(value);
@@ -180,6 +202,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [integrationOpen, setIntegrationOpen] = useState(false);
   const [editor, setEditor] = useState<Service | "new" | null>(null);
+  const [guideOpen, setGuideOpen] = useState(() => !hasDismissedOnboarding());
 
   const loadData = useCallback(
     async (showRefresh = false) => {
@@ -267,6 +290,16 @@ function App() {
     void loadData(true);
   }
 
+  function closeGuide() {
+    rememberOnboardingDismissed();
+    setGuideOpen(false);
+  }
+
+  function startConfiguration() {
+    closeGuide();
+    setIntegrationOpen(true);
+  }
+
   return (
     <MotionConfig reducedMotion="user">
       <div className="app-shell">
@@ -301,6 +334,9 @@ function App() {
             <h1>服务发布</h1>
           </div>
           <div className="topbar-actions">
+            <button type="button" className="button button-secondary guide-trigger" onClick={() => setGuideOpen(true)} title="打开使用指南">
+              <CircleHelp size={16} />使用指南
+            </button>
             <label className="token-field">
               <LockKeyhole size={14} aria-hidden="true" />
               <span className="sr-only">管理员令牌</span>
@@ -415,11 +451,99 @@ function App() {
       </main>
 
       <AnimatePresence>
+        {guideOpen && <GuideDialog onClose={closeGuide} onStart={startConfiguration} />}
         {integrationOpen && <IntegrationDialog initial={integration} zones={zones} token={adminToken} onClose={() => setIntegrationOpen(false)} onSaved={(next) => { setIntegration(next); setIntegrationOpen(false); void loadData(true); }} />}
         {editor && <ServiceDialog value={editor === "new" ? null : editor} token={adminToken} onClose={() => setEditor(null)} onSaved={(saved) => { setEditor(null); setServices((current) => editor === "new" ? [...current, saved] : current.map((item) => item.id === saved.id ? saved : item)); setNotice(editor === "new" ? "服务已创建" : "服务已更新"); }} />}
       </AnimatePresence>
       </div>
     </MotionConfig>
+  );
+}
+
+function GuideDialog({ onClose, onStart }: { onClose: () => void; onStart: () => void }) {
+  return (
+    <motion.div
+      className="dialog-layer"
+      role="presentation"
+      tabIndex={-1}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+      onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}
+    >
+      <motion.aside
+        className="dialog guide-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="guide-dialog-title"
+        aria-describedby="guide-dialog-description"
+        initial={{ x: 28, opacity: 0 }}
+        animate={{ x: 0, opacity: 1 }}
+        exit={{ x: 28, opacity: 0 }}
+        transition={{ type: "spring", stiffness: 360, damping: 32 }}
+      >
+        <div className="dialog-header">
+          <div className="guide-title-lockup">
+            <div className="guide-icon" aria-hidden="true"><CircleHelp size={20} /></div>
+            <div><p className="eyebrow">首次使用</p><h2 id="guide-dialog-title">快速开始</h2></div>
+          </div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭使用指南" title="关闭使用指南"><X size={18} /></button>
+        </div>
+        <div className="guide-content">
+          <p id="guide-dialog-description" className="guide-intro">准备好 Cloudflare 信息后，按下面顺序即可发布一个受保护的 Web 服务。</p>
+          <ol className="guide-steps">
+            <li className="guide-step">
+              <span className="guide-step-number" aria-hidden="true">1</span>
+              <div>
+                <h3>准备 Cloudflare 信息</h3>
+                <p>需要 Account ID、Zone ID 和自定义 API Token。它们都可以在 Cloudflare Dashboard 找到。</p>
+                <div className="guide-links">
+                  <a href="https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/" target="_blank" rel="noreferrer">查找 Account/Zone ID <ExternalLink size={13} /></a>
+                  <a href="https://developers.cloudflare.com/fundamentals/api/get-started/create-token/" target="_blank" rel="noreferrer">Token 创建说明 <ExternalLink size={13} /></a>
+                  <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">创建 API Token <ExternalLink size={13} /></a>
+                </div>
+                <div className="guide-note">
+                  <strong>最小权限</strong>
+                  <ul className="guide-permissions">
+                    <li>Account / Cloudflare Tunnel / Edit</li>
+                    <li>Account / Access: Apps and Policies / Edit</li>
+                    <li>Zone / DNS / Edit</li>
+                    <li>Zone / Zone / Read</li>
+                  </ul>
+                </div>
+              </div>
+            </li>
+            <li className="guide-step">
+              <span className="guide-step-number" aria-hidden="true">2</span>
+              <div>
+                <h3>连接 Cloudflare</h3>
+                <p>在连接设置中填入三个值并保存验证。API Token 只会写入本机的受限 Secret 文件，不会显示在列表或响应中。</p>
+              </div>
+            </li>
+            <li className="guide-step">
+              <span className="guide-step-number" aria-hidden="true">3</span>
+              <div>
+                <h3>填写 Web 服务</h3>
+                <p>公网域名填写目标 Zone 下的完整主机名；Origin URL 必须是运行 Connector 的机器可以访问的 HTTP/HTTPS 地址；Allow 条件填写允许登录的邮箱或邮箱域名。</p>
+              </div>
+            </li>
+            <li className="guide-step">
+              <span className="guide-step-number" aria-hidden="true">4</span>
+              <div>
+                <h3>部署并验证</h3>
+                <p>点击部署后等待操作面板完成。TunnelBox 会先准备 Tunnel、Connector 和 Access，最后创建 DNS；完成后访问公网域名测试登录和授权。</p>
+              </div>
+            </li>
+          </ol>
+          <p className="guide-footnote">不确定字段含义时，可以查看仓库 README 的中英文完整说明。</p>
+        </div>
+        <div className="dialog-actions guide-actions">
+          <button type="button" className="button button-secondary" onClick={onClose}>关闭指南</button>
+          <button type="button" className="button button-primary" onClick={onStart}><ArrowRight size={16} />开始配置</button>
+        </div>
+      </motion.aside>
+    </motion.div>
   );
 }
 
