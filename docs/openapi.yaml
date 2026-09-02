@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: TunnelBox API
   version: 0.1.0
-  description: Local control plane for publishing HTTP origins through Cloudflare Tunnel and Access.
+  description: Local control plane for quickly exposing internal HTTP/HTTPS origins. Quick needs no Cloudflare account or public domain; Private uses WARP and Access without a domain; Public uses a zone hostname, DNS, and Access.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -183,10 +183,12 @@ components:
   schemas:
     CloudflareConfigureRequest:
       type: object
-      required: [account_id, zone_id, token]
+      required: [account_id, token]
       properties:
         account_id: { type: string }
-        zone_id: { type: string }
+        zone_id:
+          type: string
+          description: Required only for Public mode. Leave empty for Private or Quick.
         token: { type: string, format: password, writeOnly: true }
     CloudflareStatus:
       type: object
@@ -209,24 +211,47 @@ components:
       required: [service_id, running, healthy]
       properties:
         service_id: { type: string }
+        mode: { type: string, enum: [quick, managed] }
         running: { type: boolean }
         healthy: { type: boolean }
+        url:
+          type: string
+          format: uri
+          description: Temporary trycloudflare.com URL for a Quick connector, when available.
         message: { type: string }
     ServiceInput:
       type: object
-      required: [name, hostname, origin_url, allow_type, allow_value]
+      required: [name, origin_url]
+      description: >-
+        Mode-specific service input. Quick (the default) needs only name and origin_url.
+        Private uses hostname as a private IP and requires an Access allow condition.
+        Public uses hostname as a zone hostname and requires an Access allow condition.
       properties:
         name: { type: string, maxLength: 120 }
-        hostname: { type: string }
+        mode:
+          type: string
+          enum: [quick, private, public]
+          default: quick
+        hostname:
+          type: string
+          description: Private IP for Private mode, or full DNS hostname for Public mode. Omit for Quick.
         origin_url: { type: string, format: uri }
-        allow_type: { type: string, enum: [email, email_domain] }
-        allow_value: { type: string }
+        allow_type:
+          type: string
+          enum: [email, email_domain]
+          description: Required for Private and Public; omit for Quick.
+        allow_value:
+          type: string
+          description: Required for Private and Public; omit for Quick.
     ServicePatch:
       description: All fields are optional for PATCH.
       type: object
       properties:
         name: { type: string, maxLength: 120 }
-        hostname: { type: string }
+        mode: { type: string, enum: [quick, private, public] }
+        hostname:
+          type: string
+          description: Private IP for Private mode, or full DNS hostname for Public mode.
         origin_url: { type: string, format: uri }
         allow_type: { type: string, enum: [email, email_domain] }
         allow_value: { type: string }
@@ -239,9 +264,14 @@ components:
             id: { type: string }
             state: { type: string, enum: [draft, deploying, active, error] }
             tunnel_id: { type: string }
+            private_route_id: { type: string }
             dns_record_id: { type: string }
             access_application_id: { type: string }
             access_policy_id: { type: string }
+            public_url:
+              type: string
+              format: uri
+              description: Generated Quick URL, when the service is active.
             created_at: { type: string, format: date-time }
             updated_at: { type: string, format: date-time }
     Operation:
