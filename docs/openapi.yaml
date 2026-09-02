@@ -1,0 +1,269 @@
+openapi: 3.0.3
+info:
+  title: TunnelBox API
+  version: 0.1.0
+  description: Local control plane for publishing HTTP origins through Cloudflare Tunnel and Access.
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+  /readyz:
+    get:
+      security: []
+      responses:
+        '200': { description: Storage is ready. }
+        '503': { $ref: '#/components/responses/Error' }
+  /api/v1/integrations/cloudflare:
+    put:
+      summary: Validate and save Cloudflare credentials
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CloudflareConfigureRequest' }
+      responses:
+        '200':
+          description: Validated integration.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudflareStatus' }
+        '400': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /api/v1/integrations/cloudflare/status:
+    get:
+      summary: Check Cloudflare integration status
+      responses:
+        '200':
+          description: Current status. The token value is never returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CloudflareStatus' }
+  /api/v1/zones:
+    get:
+      summary: List zones visible to the configured token
+      responses:
+        '200':
+          description: Zones.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [zones]
+                properties:
+                  zones:
+                    type: array
+                    items: { $ref: '#/components/schemas/Zone' }
+  /api/v1/connectors:
+    get:
+      summary: List managed cloudflared processes
+      responses:
+        '200':
+          description: Connector status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connectors]
+                properties:
+                  connectors:
+                    type: array
+                    items: { $ref: '#/components/schemas/Connector' }
+  /api/v1/services:
+    get:
+      summary: List services
+      responses:
+        '200':
+          description: Services.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [services]
+                properties:
+                  services:
+                    type: array
+                    items: { $ref: '#/components/schemas/Service' }
+    post:
+      summary: Create a service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServiceInput' }
+      responses:
+        '201':
+          description: Created service.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Service' }
+        '400': { $ref: '#/components/responses/Error' }
+  /api/v1/services/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/ServiceID' }
+    get:
+      summary: Get a service
+      responses:
+        '200':
+          description: Service.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Service' }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      summary: Update a draft or inactive service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ServicePatch' }
+      responses:
+        '200':
+          description: Updated service.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Service' }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    delete:
+      summary: Delete a service record
+      responses:
+        '204': { description: Deleted. }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/v1/services/{id}/deploy:
+    parameters:
+      - { $ref: '#/components/parameters/ServiceID' }
+    post:
+      summary: Start an asynchronous deployment
+      responses:
+        '202':
+          description: Operation accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operation' }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/v1/operations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      summary: Read deployment progress
+      responses:
+        '200':
+          description: Operation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operation' }
+        '404': { $ref: '#/components/responses/Error' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  parameters:
+    ServiceID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Error:
+      description: Stable error response.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+  schemas:
+    CloudflareConfigureRequest:
+      type: object
+      required: [account_id, zone_id, token]
+      properties:
+        account_id: { type: string }
+        zone_id: { type: string }
+        token: { type: string, format: password, writeOnly: true }
+    CloudflareStatus:
+      type: object
+      required: [configured]
+      properties:
+        configured: { type: boolean }
+        account_id: { type: string }
+        zone_id: { type: string }
+        token_id: { type: string }
+        token_state: { type: string }
+        last_error: { type: string }
+    Zone:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+    Connector:
+      type: object
+      required: [service_id, running, healthy]
+      properties:
+        service_id: { type: string }
+        running: { type: boolean }
+        healthy: { type: boolean }
+        message: { type: string }
+    ServiceInput:
+      type: object
+      required: [name, hostname, origin_url, allow_type, allow_value]
+      properties:
+        name: { type: string, maxLength: 120 }
+        hostname: { type: string }
+        origin_url: { type: string, format: uri }
+        allow_type: { type: string, enum: [email, email_domain] }
+        allow_value: { type: string }
+    ServicePatch:
+      description: All fields are optional for PATCH.
+      type: object
+      properties:
+        name: { type: string, maxLength: 120 }
+        hostname: { type: string }
+        origin_url: { type: string, format: uri }
+        allow_type: { type: string, enum: [email, email_domain] }
+        allow_value: { type: string }
+    Service:
+      allOf:
+        - $ref: '#/components/schemas/ServiceInput'
+        - type: object
+          required: [id, state, created_at, updated_at]
+          properties:
+            id: { type: string }
+            state: { type: string, enum: [draft, deploying, active, error] }
+            tunnel_id: { type: string }
+            dns_record_id: { type: string }
+            access_application_id: { type: string }
+            access_policy_id: { type: string }
+            created_at: { type: string, format: date-time }
+            updated_at: { type: string, format: date-time }
+    Operation:
+      type: object
+      required: [operation_id, service_id, kind, status, attempts, created_at, updated_at]
+      properties:
+        operation_id: { type: string }
+        service_id: { type: string }
+        kind: { type: string }
+        status: { type: string, enum: [pending, running, succeeded, failed, unknown] }
+        current_step: { type: string }
+        attempts: { type: integer }
+        error_code: { type: string }
+        error_message: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+    ErrorBody:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        request_id: { type: string }

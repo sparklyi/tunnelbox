@@ -16,6 +16,7 @@ type Config struct {
 	CloudflareTokenFile string
 	CloudflaredBinary   string
 	CloudflaredDataDir  string
+	WebDir              string
 }
 
 func Load() (Config, error) {
@@ -28,6 +29,7 @@ func Load() (Config, error) {
 		CloudflareTokenFile: valueOr("TUNNELBOX_CLOUDFLARE_TOKEN_FILE", "data/cloudflare.token"),
 		CloudflaredBinary:   valueOr("TUNNELBOX_CLOUDFLARED_BINARY", "cloudflared"),
 		CloudflaredDataDir:  valueOr("TUNNELBOX_CLOUDFLARED_DATA_DIR", "data/cloudflared"),
+		WebDir:              valueOr("TUNNELBOX_WEB_DIR", "web/dist"),
 	}
 	if cfg.ListenAddress == "" {
 		return Config{}, fmt.Errorf("TUNNELBOX_LISTEN must not be empty")

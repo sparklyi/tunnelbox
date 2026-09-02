@@ -78,7 +78,7 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	router, err := httpapi.NewRouter(httpapi.Dependencies{
 		Services: services, Operations: operations, Deployer: deployer, Cloudflare: integration,
 		Connectors: connectors, AdminToken: adminToken, Logger: logger,
-		Readiness: db.PingContext,
+		Readiness: db.PingContext, WebDir: cfg.WebDir,
 	})
 	if err != nil {
 		return fmt.Errorf("build http router: %w", err)
