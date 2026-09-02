@@ -20,19 +20,23 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 
 type ServiceState = "draft" | "deploying" | "active" | "error";
 type AllowType = "email" | "email_domain";
+type ExposureMode = "quick" | "private" | "public";
 
 type Service = {
   id: string;
   name: string;
-  hostname: string;
+  mode?: ExposureMode;
+  hostname?: string;
   origin_url: string;
-  allow_type: AllowType;
-  allow_value: string;
+  allow_type?: AllowType;
+  allow_value?: string;
   state: ServiceState;
   tunnel_id?: string;
+  private_route_id?: string;
   dns_record_id?: string;
   access_application_id?: string;
   access_policy_id?: string;
+  public_url?: string;
   created_at: string;
   updated_at: string;
 };
@@ -60,24 +64,48 @@ type IntegrationStatus = {
 };
 
 type Zone = { id: string; name: string };
-type Connector = { service_id: string; running: boolean; healthy: boolean; message?: string };
+type Connector = { service_id: string; mode?: string; running: boolean; healthy: boolean; url?: string; message?: string };
 
 type ServiceForm = {
+  mode: ExposureMode;
   name: string;
   hostname: string;
   origin_url: string;
-  allow_type: AllowType;
+  allow_type: AllowType | "";
   allow_value: string;
 };
 
 const emptyIntegration: IntegrationStatus = { configured: false };
 const emptyServiceForm: ServiceForm = {
+  mode: "quick",
   name: "",
   hostname: "",
   origin_url: "http://",
-  allow_type: "email",
+  allow_type: "",
   allow_value: "",
 };
+
+const modeOptions: Array<{ value: ExposureMode; label: string; short: string }> = [
+  { value: "quick", label: "临时公开", short: "Quick" },
+  { value: "private", label: "私网受控", short: "Private" },
+  { value: "public", label: "自有域名", short: "Public" },
+];
+
+function serviceMode(item: Pick<Service, "mode" | "hostname">): ExposureMode {
+  if (item.mode === "private" || item.mode === "public" || item.mode === "quick") return item.mode;
+  return item.hostname ? "public" : "quick";
+}
+
+function modeMeta(mode: ExposureMode) {
+  switch (mode) {
+    case "private":
+      return { label: "私网受控", tone: "private" };
+    case "public":
+      return { label: "自有域名", tone: "public" };
+    default:
+      return { label: "临时公开", tone: "quick" };
+  }
+}
 
 class ApiError extends Error {
   readonly status: number;
@@ -218,7 +246,7 @@ function App() {
         setIntegration(status);
         setServices(servicePayload.services || []);
         setConnectors(connectorPayload.connectors || []);
-        if (status.configured) {
+        if (status.configured && status.zone_id) {
           const zonePayload = await request<{ zones: Zone[] }>("/api/v1/zones", adminTokenRef.current);
           setZones(zonePayload.zones || []);
         } else {
@@ -293,6 +321,11 @@ function App() {
   function closeGuide() {
     rememberOnboardingDismissed();
     setGuideOpen(false);
+  }
+
+  function startQuick() {
+    closeGuide();
+    setEditor("new");
   }
 
   function startConfiguration() {
@@ -378,7 +411,9 @@ function App() {
           <div className="integration-copy">
             <span className="eyebrow">Cloudflare 集成</span>
             <strong>{integration.configured ? "已连接" : "尚未连接"}</strong>
-            <span>{integration.configured ? `${integration.account_id} · ${integration.zone_id}` : "配置后才能创建 Tunnel 和 Access 策略"}</span>
+            <span>{integration.configured
+              ? integration.zone_id ? `${integration.account_id} · ${integration.zone_id}` : `${integration.account_id} · 仅账号权限`
+              : "Quick 模式无需配置；Private / Public 模式需要账号权限"}</span>
           </div>
           <div className="integration-state">
             <span className={`status-dot ${integration.configured ? "ok" : "muted"}`} />
@@ -407,24 +442,33 @@ function App() {
               <div className="empty-state">
                 <div className="empty-icon"><TerminalSquare size={21} /></div>
                 <strong>还没有发布服务</strong>
-                <span>创建一个 Web Origin，随后由 Cloudflare Access 保护它。</span>
+                <span>没有公网域名也可以从「临时公开」开始；需要权限控制时选择「私网受控」。</span>
                 <button type="button" className="button button-primary" onClick={() => setEditor("new")}><Plus size={17} />新建服务</button>
               </div>
             ) : (
               <table className="service-table">
                 <thead>
-                  <tr><th>服务</th><th>Origin</th><th>访问条件</th><th>状态</th><th><span className="sr-only">操作</span></th></tr>
+                  <tr><th>服务</th><th>模式</th><th>入口 / Origin</th><th>访问条件</th><th>状态</th><th><span className="sr-only">操作</span></th></tr>
                 </thead>
                 <tbody>
                   <AnimatePresence initial={false}>
                     {services.map((item) => {
                       const state = stateMeta(item.state);
+                      const mode = serviceMode(item);
+                      const modeInfo = modeMeta(mode);
                       const connector = connectors.find((entry) => entry.service_id === item.id);
+                      const access = mode === "quick"
+                        ? "无需 Access（临时地址）"
+                        : item.allow_type === "email_domain" ? `域 · ${item.allow_value || "-"}` : item.allow_value || "-";
                       return (
                         <motion.tr key={item.id} layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                          <td data-label="服务"><div className="service-name"><strong>{item.name}</strong><span>{item.hostname}</span></div></td>
-                          <td data-label="Origin"><code>{item.origin_url}</code></td>
-                          <td data-label="访问条件"><span className="access-value">{item.allow_type === "email_domain" ? `域 · ${item.allow_value}` : item.allow_value}</span></td>
+                          <td data-label="服务"><div className="service-name"><strong>{item.name}</strong><span>{mode === "quick" ? "cloudflared 临时隧道" : mode === "private" ? "Cloudflare 私网路由" : item.hostname}</span></div></td>
+                          <td data-label="模式"><span className={`mode-badge ${modeInfo.tone}`}>{modeInfo.label}</span></td>
+                          <td data-label="入口 / Origin"><div className="endpoint-cell">
+                            {item.public_url ? <a href={item.public_url} target="_blank" rel="noreferrer">{item.public_url}<ExternalLink size={13} /></a> : <strong>{mode === "public" ? item.hostname : mode === "private" ? item.hostname : "部署后生成"}</strong>}
+                            <code>{item.origin_url}</code>
+                          </div></td>
+                          <td data-label="访问条件"><span className="access-value">{access}</span></td>
                           <td data-label="状态"><div className="state-cell"><span className={`state-badge ${state.tone}`}><span className="status-dot" />{state.label}</span>{connector?.running && <span className="connector-note">Connector 在线</span>}</div></td>
                           <td className="row-actions"><button type="button" className="text-button" onClick={() => setEditor(item)}>编辑</button><button type="button" className="text-button deploy-button" onClick={() => void deploy(item)} disabled={item.state === "deploying"}>{item.state === "deploying" ? "部署中" : "部署"}</button></td>
                         </motion.tr>
@@ -451,16 +495,16 @@ function App() {
       </main>
 
       <AnimatePresence>
-        {guideOpen && <GuideDialog onClose={closeGuide} onStart={startConfiguration} />}
+        {guideOpen && <GuideDialog onClose={closeGuide} onQuick={startQuick} onConfigure={startConfiguration} />}
         {integrationOpen && <IntegrationDialog initial={integration} zones={zones} token={adminToken} onClose={() => setIntegrationOpen(false)} onSaved={(next) => { setIntegration(next); setIntegrationOpen(false); void loadData(true); }} />}
-        {editor && <ServiceDialog value={editor === "new" ? null : editor} token={adminToken} onClose={() => setEditor(null)} onSaved={(saved) => { setEditor(null); setServices((current) => editor === "new" ? [...current, saved] : current.map((item) => item.id === saved.id ? saved : item)); setNotice(editor === "new" ? "服务已创建" : "服务已更新"); }} />}
+        {editor && <ServiceDialog key={editor === "new" ? "new" : editor.id} value={editor === "new" ? null : editor} token={adminToken} onClose={() => setEditor(null)} onSaved={(saved) => { setEditor(null); setServices((current) => editor === "new" ? [...current, saved] : current.map((item) => item.id === saved.id ? saved : item)); setNotice(editor === "new" ? "服务已创建" : "服务已更新"); }} />}
       </AnimatePresence>
       </div>
     </MotionConfig>
   );
 }
 
-function GuideDialog({ onClose, onStart }: { onClose: () => void; onStart: () => void }) {
+function GuideDialog({ onClose, onQuick, onConfigure }: { onClose: () => void; onQuick: () => void; onConfigure: () => void }) {
   return (
     <motion.div
       className="dialog-layer"
@@ -491,56 +535,56 @@ function GuideDialog({ onClose, onStart }: { onClose: () => void; onStart: () =>
           <button type="button" className="icon-button" onClick={onClose} aria-label="关闭使用指南" title="关闭使用指南"><X size={18} /></button>
         </div>
         <div className="guide-content">
-          <p id="guide-dialog-description" className="guide-intro">准备好 Cloudflare 信息后，按下面顺序即可发布一个受保护的 Web 服务。</p>
+          <p id="guide-dialog-description" className="guide-intro">先选适合你的出口方式。没有公网域名时也能马上开始，但不同方式的访问体验和权限边界不同。</p>
           <ol className="guide-steps">
             <li className="guide-step">
               <span className="guide-step-number" aria-hidden="true">1</span>
               <div>
-                <h3>准备 Cloudflare 信息</h3>
-                <p>需要 Account ID、Zone ID 和自定义 API Token。它们都可以在 Cloudflare Dashboard 找到。</p>
+                <h3>选择出口方式</h3>
+                <p><strong>临时公开</strong>不需要域名、账号或 Token，会生成随机的 trycloudflare.com 地址；<strong>私网受控</strong>不需要公网域名，但访问者要加入同一个 Zero Trust 组织、安装并登录 WARP，还要让目标 IP 经过 Split Tunnel；<strong>自有域名</strong>适合普通浏览器访问和标准 Access 登录。</p>
                 <div className="guide-links">
-                  <a href="https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/" target="_blank" rel="noreferrer">查找 Account/Zone ID <ExternalLink size={13} /></a>
-                  <a href="https://developers.cloudflare.com/fundamentals/api/get-started/create-token/" target="_blank" rel="noreferrer">Token 创建说明 <ExternalLink size={13} /></a>
-                  <a href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noreferrer">创建 API Token <ExternalLink size={13} /></a>
-                </div>
-                <div className="guide-note">
-                  <strong>最小权限</strong>
-                  <ul className="guide-permissions">
-                    <li>Account / Cloudflare Tunnel / Edit</li>
-                    <li>Account / Access: Apps and Policies / Edit</li>
-                    <li>Zone / DNS / Edit</li>
-                    <li>Zone / Zone / Read</li>
-                  </ul>
+                  <a href="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/" target="_blank" rel="noreferrer">Quick Tunnel 说明 <ExternalLink size={13} /></a>
+                  <a href="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/private-net/cloudflared/connect-cidr/" target="_blank" rel="noreferrer">私网路由说明 <ExternalLink size={13} /></a>
+                  <a href="https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/configure/route-traffic/split-tunnels/" target="_blank" rel="noreferrer">Split Tunnels 配置 <ExternalLink size={13} /></a>
                 </div>
               </div>
             </li>
             <li className="guide-step">
               <span className="guide-step-number" aria-hidden="true">2</span>
               <div>
-                <h3>连接 Cloudflare</h3>
-                <p>在连接设置中填入三个值并保存验证。API Token 只会写入本机的受限 Secret 文件，不会显示在列表或响应中。</p>
+                <h3>按需连接 Cloudflare</h3>
+                <p>Quick 模式可以跳过连接设置。Private 只需 Account ID 和 Token；Public 还需要目标 Zone ID。Token 只会写入本机的受限 Secret 文件，不会显示在列表或响应中。</p>
+                <div className="guide-note">
+                  <strong>Public / Private 的最小权限</strong>
+                  <ul className="guide-permissions">
+                    <li>Account / Cloudflare Tunnel / Edit</li>
+                    <li>Account / Access: Apps and Policies / Edit</li>
+                    <li>Account / Zero Trust / Edit</li>
+                    <li>Public 额外需要 Zone / DNS / Edit、Zone / Zone / Read</li>
+                  </ul>
+                </div>
               </div>
             </li>
             <li className="guide-step">
               <span className="guide-step-number" aria-hidden="true">3</span>
               <div>
-                <h3>填写 Web 服务</h3>
-                <p>公网域名填写目标 Zone 下的完整主机名；Origin URL 必须是运行 Connector 的机器可以访问的 HTTP/HTTPS 地址；Allow 条件填写允许登录的邮箱或邮箱域名。</p>
+                <h3>填写 Origin</h3>
+                <p>Origin URL 必须是运行 Connector 的机器可以访问的 HTTP/HTTPS 地址。Private 模式再填写同一台服务的私网 IP；Public 模式填写目标 Zone 下的主机名；Quick 模式不需要额外地址。</p>
               </div>
             </li>
             <li className="guide-step">
               <span className="guide-step-number" aria-hidden="true">4</span>
               <div>
                 <h3>部署并验证</h3>
-                <p>点击部署后等待操作面板完成。TunnelBox 会先准备 Tunnel、Connector 和 Access，最后创建 DNS；完成后访问公网域名测试登录和授权。</p>
+                <p>点击部署后等待操作面板完成。Quick 完成后直接打开随机地址；Private 先确认设备已 enrollment 且目标 IP 已走 WARP，再用 WARP 访问私网 IP；Public 最后创建 DNS，再用普通浏览器访问并测试 Access 登录。</p>
               </div>
             </li>
           </ol>
           <p className="guide-footnote">不确定字段含义时，可以查看仓库 README 的中英文完整说明。</p>
         </div>
         <div className="dialog-actions guide-actions">
-          <button type="button" className="button button-secondary" onClick={onClose}>关闭指南</button>
-          <button type="button" className="button button-primary" onClick={onStart}><ArrowRight size={16} />开始配置</button>
+          <button type="button" className="button button-secondary" onClick={onConfigure}><Settings2 size={16} />配置 Cloudflare</button>
+          <button type="button" className="button button-primary" onClick={onQuick}><ArrowRight size={16} />直接创建 Quick</button>
         </div>
       </motion.aside>
     </motion.div>
@@ -575,8 +619,9 @@ function IntegrationDialog({ initial, zones, token, onClose, onSaved }: { initia
         <div className="dialog-header"><div><p className="eyebrow">Cloudflare</p><h2 id="cloudflare-dialog-title">连接设置</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="关闭" title="关闭"><X size={18} /></button></div>
         <form className="dialog-form" onSubmit={submit}>
           <label>Account ID<input value={accountID} onChange={(event) => setAccountID(event.target.value)} required /></label>
-          <label>Zone ID{zones.length > 0 ? <select value={zoneID} onChange={(event) => setZoneID(event.target.value)} required><option value="">选择 Zone</option>{zones.map((zone) => <option key={zone.id} value={zone.id}>{zone.name} · {zone.id}</option>)}</select> : <input value={zoneID} onChange={(event) => setZoneID(event.target.value)} placeholder="例如 023e..." required />}</label>
+          <label>Zone ID <span className="label-hint">Public 模式需要，Quick / Private 可留空</span>{zones.length > 0 ? <select value={zoneID} onChange={(event) => setZoneID(event.target.value)}><option value="">不选择 Zone</option>{zones.map((zone) => <option key={zone.id} value={zone.id}>{zone.name} · {zone.id}</option>)}</select> : <input value={zoneID} onChange={(event) => setZoneID(event.target.value)} placeholder="没有 Zone 时留空" />}</label>
           <label>API Token<input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="仅本次提交使用" autoComplete="new-password" required /></label>
+          <p className="form-note">Token 至少需要 Cloudflare Tunnel Edit；Private 还需要 Access Apps and Policies Edit、Zero Trust Edit，Public 另外需要 Zone DNS Edit 和 Zone Read。</p>
           {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}
           <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? <Spinner /> : <Save size={16} />}{saving ? "验证中" : "保存并验证"}</button></div>
         </form>
@@ -586,10 +631,32 @@ function IntegrationDialog({ initial, zones, token, onClose, onSaved }: { initia
 }
 
 function ServiceDialog({ value, token, onClose, onSaved }: { value: Service | null; token: string; onClose: () => void; onSaved: (service: Service) => void }) {
-  const [form, setForm] = useState<ServiceForm>(value ? { name: value.name, hostname: value.hostname, origin_url: value.origin_url, allow_type: value.allow_type, allow_value: value.allow_value } : emptyServiceForm);
+  const [form, setForm] = useState<ServiceForm>(() => {
+    if (!value) return { ...emptyServiceForm };
+    const mode = serviceMode(value);
+    return {
+      mode,
+      name: value.name,
+      hostname: mode === "quick" ? "" : value.hostname || "",
+      origin_url: value.origin_url,
+      allow_type: mode === "quick" ? "" : value.allow_type || "email",
+      allow_value: mode === "quick" ? "" : value.allow_value || "",
+    };
+  });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const update = <K extends keyof ServiceForm>(key: K, next: ServiceForm[K]) => setForm((current) => ({ ...current, [key]: next }));
+
+  function chooseMode(mode: ExposureMode) {
+    setForm((current) => ({
+      ...current,
+      mode,
+      hostname: mode === "quick" || current.mode !== mode ? "" : current.hostname,
+      allow_type: mode === "quick" ? "" : current.allow_type || "email",
+      allow_value: mode === "quick" ? "" : current.allow_value,
+    }));
+    setError("");
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -611,10 +678,19 @@ function ServiceDialog({ value, token, onClose, onSaved }: { value: Service | nu
       <motion.aside className="dialog" role="dialog" aria-modal="true" aria-labelledby="service-dialog-title" initial={{ x: 28, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 28, opacity: 0 }} transition={{ type: "spring", stiffness: 360, damping: 32 }}>
         <div className="dialog-header"><div><p className="eyebrow">Web 服务</p><h2 id="service-dialog-title">{value ? "编辑服务" : "新建服务"}</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="关闭" title="关闭"><X size={18} /></button></div>
         <form className="dialog-form" onSubmit={submit}>
+          <div className="mode-picker" role="radiogroup" aria-label="发布方式">
+            {modeOptions.map((option) => <button key={option.value} type="button" role="radio" aria-checked={form.mode === option.value} className={`mode-option ${form.mode === option.value ? "selected" : ""}`} onClick={() => chooseMode(option.value)}><strong>{option.label}</strong><span>{option.short}</span></button>)}
+          </div>
+          <div className={`mode-help ${form.mode}`}>
+            {form.mode === "quick" && <><strong>没有域名也能马上分享</strong><span>cloudflared 会生成随机的 <code>trycloudflare.com</code> 地址。该地址是临时的，不带标准 Cloudflare Access 邮箱策略。</span></>}
+            {form.mode === "private" && <><strong>不需要公网域名</strong><span>访问者需要加入同一个 Zero Trust 组织并使用 Cloudflare One Client/WARP；还要在 Split Tunnels 中让这个私网 IP 经过 WARP，Access 才会按下面的条件控制访问。</span></>}
+            {form.mode === "public" && <><strong>普通浏览器 + Access</strong><span>需要你拥有的 Cloudflare Zone。TunnelBox 会创建 DNS CNAME，并在最后启用公网入口。</span></>}
+          </div>
           <label>名称<input value={form.name} onChange={(event) => update("name", event.target.value)} placeholder="例如 内网文档" required maxLength={120} /></label>
-          <label>公网域名<input value={form.hostname} onChange={(event) => update("hostname", event.target.value)} placeholder="docs.example.com" required /></label>
-          <label>Origin URL<input type="url" value={form.origin_url} onChange={(event) => update("origin_url", event.target.value)} placeholder="http://192.168.1.20:8080" required /></label>
-          <div className="form-grid"><label>允许条件<select value={form.allow_type} onChange={(event) => update("allow_type", event.target.value as AllowType)}><option value="email">指定邮箱</option><option value="email_domain">邮箱域名</option></select></label><label>条件值<input type={form.allow_type === "email" ? "email" : "text"} value={form.allow_value} onChange={(event) => update("allow_value", event.target.value)} placeholder={form.allow_type === "email" ? "you@example.com" : "example.com"} required /></label></div>
+          {form.mode !== "quick" && <label>{form.mode === "private" ? "私网 IP" : "公网域名"}<input value={form.hostname} onChange={(event) => update("hostname", event.target.value)} placeholder={form.mode === "private" ? "192.168.1.20" : "docs.example.com"} required /></label>}
+          <label>Origin URL <span className="label-hint">Connector 所在环境必须能访问</span><input type="url" value={form.origin_url} onChange={(event) => update("origin_url", event.target.value)} placeholder={form.mode === "private" ? "http://192.168.1.20:8080" : "http://127.0.0.1:3000"} required /></label>
+          {form.mode !== "quick" && <div className="form-grid"><label>允许条件<select value={form.allow_type || "email"} onChange={(event) => update("allow_type", event.target.value as AllowType)}><option value="email">指定邮箱</option><option value="email_domain">邮箱域名</option></select></label><label>条件值<input type={form.allow_type === "email" ? "email" : "text"} value={form.allow_value} onChange={(event) => update("allow_value", event.target.value)} placeholder={form.allow_type === "email" ? "you@example.com" : "example.com"} required /></label></div>}
+          {form.mode === "quick" && <p className="form-note">部署完成后，随机公网地址会出现在服务列表中。停止 TunnelBox 后该地址失效。</p>}
           {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}
           <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? <Spinner /> : <Save size={16} />}{saving ? "保存中" : "保存服务"}</button></div>
         </form>
