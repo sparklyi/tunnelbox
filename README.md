@@ -108,7 +108,7 @@ docker compose -f deploy/docker-compose.yml exec tunnelbox cat /app/data/admin.t
 Private:
 Account / Cloudflare Tunnel / Edit
 Account / Access: Apps and Policies / Edit
-Account / Zero Trust / Edit
+Account / Zero Trust / Write
 
 Public（在 Private 基础上增加）：
 Zone / DNS / Edit
@@ -324,7 +324,7 @@ Grant the minimum permissions for the selected mode:
 Private:
 Account / Cloudflare Tunnel / Edit
 Account / Access: Apps and Policies / Edit
-Account / Zero Trust / Edit
+Account / Zero Trust / Write
 
 Public (add these to Private):
 Zone / DNS / Edit

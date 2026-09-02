@@ -559,7 +559,7 @@ function GuideDialog({ onClose, onQuick, onConfigure }: { onClose: () => void; o
                   <ul className="guide-permissions">
                     <li>Account / Cloudflare Tunnel / Edit</li>
                     <li>Account / Access: Apps and Policies / Edit</li>
-                    <li>Account / Zero Trust / Edit</li>
+                    <li>Account / Zero Trust / Write</li>
                     <li>Public 额外需要 Zone / DNS / Edit、Zone / Zone / Read</li>
                   </ul>
                 </div>
@@ -621,7 +621,7 @@ function IntegrationDialog({ initial, zones, token, onClose, onSaved }: { initia
           <label>Account ID<input value={accountID} onChange={(event) => setAccountID(event.target.value)} required /></label>
           <label>Zone ID <span className="label-hint">Public 模式需要，Quick / Private 可留空</span>{zones.length > 0 ? <select value={zoneID} onChange={(event) => setZoneID(event.target.value)}><option value="">不选择 Zone</option>{zones.map((zone) => <option key={zone.id} value={zone.id}>{zone.name} · {zone.id}</option>)}</select> : <input value={zoneID} onChange={(event) => setZoneID(event.target.value)} placeholder="没有 Zone 时留空" />}</label>
           <label>API Token<input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="仅本次提交使用" autoComplete="new-password" required /></label>
-          <p className="form-note">Token 至少需要 Cloudflare Tunnel Edit；Private 还需要 Access Apps and Policies Edit、Zero Trust Edit，Public 另外需要 Zone DNS Edit 和 Zone Read。</p>
+          <p className="form-note">Token 至少需要 Cloudflare Tunnel Edit；Private 还需要 Access Apps and Policies Edit、Zero Trust Write，Public 另外需要 Zone DNS Edit 和 Zone Read。</p>
           {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}
           <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? <Spinner /> : <Save size={16} />}{saving ? "验证中" : "保存并验证"}</button></div>
         </form>
