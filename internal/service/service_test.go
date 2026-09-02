@@ -1,0 +1,136 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+type memoryRepository struct {
+	items map[string]Service
+}
+
+func newMemoryRepository() *memoryRepository {
+	return &memoryRepository{items: make(map[string]Service)}
+}
+
+func (r *memoryRepository) List(_ context.Context, workspaceID string) ([]Service, error) {
+	items := make([]Service, 0)
+	for _, item := range r.items {
+		if item.WorkspaceID == workspaceID {
+			items = append(items, item)
+		}
+	}
+	return items, nil
+}
+
+func (r *memoryRepository) Get(_ context.Context, _, id string) (Service, error) {
+	item, ok := r.items[id]
+	if !ok {
+		return Service{}, ErrNotFound
+	}
+	return item, nil
+}
+
+func (r *memoryRepository) Create(_ context.Context, item Service) error {
+	if _, exists := r.items[item.ID]; exists {
+		return ErrConflict
+	}
+	r.items[item.ID] = item
+	return nil
+}
+
+func (r *memoryRepository) Update(_ context.Context, item Service) error {
+	if _, exists := r.items[item.ID]; !exists {
+		return ErrNotFound
+	}
+	r.items[item.ID] = item
+	return nil
+}
+
+func (r *memoryRepository) Delete(_ context.Context, _, id string) error {
+	if _, exists := r.items[id]; !exists {
+		return ErrNotFound
+	}
+	delete(r.items, id)
+	return nil
+}
+
+func (r *memoryRepository) SetState(_ context.Context, _, id string, state State) error {
+	item, ok := r.items[id]
+	if !ok {
+		return ErrNotFound
+	}
+	item.State = state
+	r.items[id] = item
+	return nil
+}
+
+func (r *memoryRepository) SetRemoteRefs(_ context.Context, _, id string, refs RemoteRefs) error {
+	item, ok := r.items[id]
+	if !ok {
+		return ErrNotFound
+	}
+	item.RemoteRefs = refs
+	r.items[id] = item
+	return nil
+}
+
+func TestUseCaseCreateNormalizesAndRejectsUnsafeOrigin(t *testing.T) {
+	repo := newMemoryRepository()
+	useCase := NewUseCase(repo, "workspace")
+	item, err := useCase.Create(context.Background(), CreateInput{
+		Name: "  Demo ", Hostname: "App.Example.COM", OriginURL: "https://127.0.0.1:8443/path",
+		AllowType: " email ", AllowValue: "User@Example.COM",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if item.Name != "Demo" || item.Hostname != "app.example.com" || item.AllowType != AllowEmail || item.AllowValue != "user@example.com" {
+		t.Fatalf("unexpected normalized item: %+v", item)
+	}
+	if item.State != StateDraft || item.CreatedAt.IsZero() {
+		t.Fatalf("unexpected initial state: %+v", item)
+	}
+
+	_, err = useCase.Create(context.Background(), CreateInput{
+		Name: "bad", Hostname: "bad.example.com", OriginURL: "file:///tmp/x",
+		AllowType: AllowEmail, AllowValue: "user@example.com",
+	})
+	var validation *ValidationError
+	if !errors.As(err, &validation) || validation.Field != "origin_url" {
+		t.Fatalf("error = %v, want origin validation", err)
+	}
+}
+
+func TestUseCaseUpdateBlocksDeployingService(t *testing.T) {
+	repo := newMemoryRepository()
+	useCase := NewUseCase(repo, "workspace")
+	item, err := useCase.Create(context.Background(), CreateInput{
+		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: AllowEmailDomain, AllowValue: "example.com",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	item.State = StateDeploying
+	repo.items[item.ID] = item
+	newName := "Changed"
+	_, err = useCase.Update(context.Background(), item.ID, UpdateInput{Name: &newName})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("update error = %v, want conflict", err)
+	}
+}
+
+func TestValidHostname(t *testing.T) {
+	for _, value := range []string{"example.com", "a-1.internal"} {
+		if !validHostname(value) {
+			t.Errorf("validHostname(%q) = false", value)
+		}
+	}
+	for _, value := range []string{"", "-bad.example", "bad-.example", "127.0.0.1", "bad_underscore.example"} {
+		if validHostname(value) {
+			t.Errorf("validHostname(%q) = true", value)
+		}
+	}
+}

@@ -7,11 +7,17 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sparklyi/tunnelbox/internal/auth"
 	"github.com/sparklyi/tunnelbox/internal/config"
+	"github.com/sparklyi/tunnelbox/internal/httpapi"
+	"github.com/sparklyi/tunnelbox/internal/operation"
+	"github.com/sparklyi/tunnelbox/internal/service"
 	"github.com/sparklyi/tunnelbox/internal/store/sqlite"
 )
 
-// Run assembles the application. Feature wiring is added in later slices.
+const defaultWorkspaceID = "default"
+
+// Run assembles the application and serves until ctx is canceled.
 func Run(ctx context.Context, logger *slog.Logger) error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -24,9 +30,31 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer db.Close()
 
+	store := sqlite.NewStore(db)
+	workspaceID := cfg.WorkspaceID
+	if workspaceID == "" {
+		workspaceID = defaultWorkspaceID
+	}
+	if err := store.EnsureWorkspace(ctx, workspaceID, cfg.WorkspaceName); err != nil {
+		return fmt.Errorf("ensure workspace: %w", err)
+	}
+	adminToken, err := auth.LoadToken(cfg.AdminTokenFile)
+	if err != nil {
+		return fmt.Errorf("load admin token: %w", err)
+	}
+	services := service.NewUseCase(store.Services(), workspaceID)
+	operations := operation.NewManager(store.Operations())
+	router, err := httpapi.NewRouter(httpapi.Dependencies{
+		Services: services, Operations: operations, AdminToken: adminToken, Logger: logger,
+		Readiness: db.PingContext,
+	})
+	if err != nil {
+		return fmt.Errorf("build http router: %w", err)
+	}
+
 	server := &http.Server{
 		Addr:              cfg.ListenAddress,
-		Handler:           http.NewServeMux(),
+		Handler:           router,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
