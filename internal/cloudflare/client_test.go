@@ -178,11 +178,48 @@ func TestClientPrivateRouteAndAccessApplication(t *testing.T) {
 	if appBody["allow_authenticate_via_warp"] != true {
 		t.Fatalf("warp auth body = %v", appBody)
 	}
-	if _, exists := appBody["destinations"]; exists {
-		t.Fatalf("private application unexpectedly has public destinations: %v", appBody)
+	if appBody["domain"] != "192.168.1.20" || appBody["domain_type"] != "private" {
+		t.Fatalf("private application domain = %v", appBody)
 	}
-	domains, ok := appBody["self_hosted_domains"].([]any)
-	if !ok || len(domains) != 1 || domains[0] != "192.168.1.20:8080" {
-		t.Fatalf("private domains = %v", appBody["self_hosted_domains"])
+	destinations, ok := appBody["destinations"].([]any)
+	if !ok || len(destinations) != 1 {
+		t.Fatalf("private destinations = %v", appBody["destinations"])
+	}
+	destination, ok := destinations[0].(map[string]any)
+	if !ok || destination["type"] != "private" || destination["cidr"] != "192.168.1.20/32" || destination["port_range"] != "8080" {
+		t.Fatalf("private destination = %v", destinations[0])
+	}
+}
+
+func TestPrivateApplicationTarget(t *testing.T) {
+	tests := []struct {
+		name    string
+		domain  string
+		host    string
+		cidr    string
+		port    string
+		wantErr bool
+	}{
+		{name: "ipv4", domain: "192.168.1.20:8080", host: "192.168.1.20", cidr: "192.168.1.20/32", port: "8080"},
+		{name: "ipv6", domain: "[fd00::20]:8443", host: "fd00::20", cidr: "fd00::20/128", port: "8443"},
+		{name: "missing port", domain: "192.168.1.20", wantErr: true},
+		{name: "invalid port", domain: "192.168.1.20:65536", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			host, cidr, port, err := privateApplicationTarget(tt.domain)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("privateApplicationTarget(%q) succeeded", tt.domain)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("privateApplicationTarget(%q): %v", tt.domain, err)
+			}
+			if host != tt.host || cidr != tt.cidr || port != tt.port {
+				t.Fatalf("privateApplicationTarget(%q) = %q, %q, %q", tt.domain, host, cidr, port)
+			}
+		})
 	}
 }

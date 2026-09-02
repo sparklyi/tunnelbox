@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	cloudflarego "github.com/cloudflare/cloudflare-go/v2"
@@ -236,18 +237,26 @@ func (c *Client) EnsureApplication(ctx context.Context, spec provision.AccessApp
 	if spec.Name == "" || spec.Domain == "" {
 		return provision.RemoteRef{}, errors.New("application name and domain are required")
 	}
+	domain := strings.TrimSpace(spec.Domain)
 	body := map[string]any{
-		"name": spec.Name, "domain": spec.Domain, "type": "self_hosted",
+		"name": spec.Name, "domain": domain, "type": "self_hosted",
 		"session_duration":           "24h",
 		"enable_binding_cookie":      true,
 		"http_only_cookie_attribute": true,
 		"app_launcher_visible":       false,
 	}
 	if spec.Private {
-		body["self_hosted_domains"] = []string{spec.Domain}
+		host, cidr, port, err := privateApplicationTarget(domain)
+		if err != nil {
+			return provision.RemoteRef{}, err
+		}
+		domain = host
+		body["domain"] = domain
+		body["domain_type"] = "private"
+		body["destinations"] = []map[string]string{{"type": "private", "cidr": cidr, "port_range": port}}
 		body["allow_authenticate_via_warp"] = true
 	} else {
-		body["destinations"] = []map[string]string{{"type": "public", "uri": spec.Domain}}
+		body["destinations"] = []map[string]string{{"type": "public", "uri": domain}}
 	}
 	if spec.PolicyID != "" {
 		body["policies"] = []map[string]any{{"id": spec.PolicyID, "precedence": 1}}
@@ -259,13 +268,13 @@ func (c *Client) EnsureApplication(ctx context.Context, spec provision.AccessApp
 		path = c.accountPath("access", "apps", spec.ID)
 	} else {
 		var existing []accessApplicationResult
-		lookupPath := path + "?domain=" + url.QueryEscape(spec.Domain) + "&exact=true&per_page=100"
+		lookupPath := path + "?domain=" + url.QueryEscape(domain) + "&exact=true&per_page=100"
 		if err := c.call(ctx, http.MethodGet, lookupPath, nil, &existing); err != nil {
 			return provision.RemoteRef{}, err
 		}
 		matches := make([]accessApplicationResult, 0, len(existing))
 		for _, item := range existing {
-			if strings.EqualFold(item.Domain, spec.Domain) && item.Name == spec.Name {
+			if strings.EqualFold(item.Domain, domain) && item.Name == spec.Name {
 				matches = append(matches, item)
 			}
 		}
@@ -293,6 +302,28 @@ func (c *Client) EnsureApplication(ctx context.Context, spec provision.AccessApp
 		return provision.RemoteRef{}, &Error{Code: "cloudflare_invalid_application_response"}
 	}
 	return provision.RemoteRef{ID: result.ID}, nil
+}
+
+func privateApplicationTarget(domain string) (host, cidr, port string, err error) {
+	host, port, err = net.SplitHostPort(domain)
+	if err != nil {
+		return "", "", "", errors.New("private application domain must include an IP address and port")
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", "", "", errors.New("private application domain host must be an IP address")
+	}
+	portNumber, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || portNumber == 0 {
+		return "", "", "", errors.New("private application domain port must be between 1 and 65535")
+	}
+	host = ip.String()
+	if ip.To4() != nil {
+		cidr = host + "/32"
+	} else {
+		cidr = host + "/128"
+	}
+	return host, cidr, strconv.FormatUint(portNumber, 10), nil
 }
 
 func (c *Client) EnsurePolicy(ctx context.Context, spec provision.AccessPolicySpec) (provision.RemoteRef, error) {
