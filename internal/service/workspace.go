@@ -3,12 +3,12 @@ package service
 import "context"
 
 type Workspace struct {
-	ID                   string
-	Name                 string
-	AccountID            string
-	ZoneID               string
-	CloudflareTokenPath  string
-	AdminTokenPath       string
+	ID                  string
+	Name                string
+	AccountID           string
+	ZoneID              string
+	CloudflareTokenPath string
+	AdminTokenPath      string
 }
 
 // WorkspaceRepository is the narrow settings contract consumed by the
