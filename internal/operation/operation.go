@@ -123,6 +123,9 @@ func (m *Manager) run(ctx context.Context, op Operation, task Task) {
 		return
 	}
 	err := task(ctx, op)
+	if latest, getErr := m.repo.Get(context.Background(), op.ID); getErr == nil {
+		op.CurrentStep = latest.CurrentStep
+	}
 	finished := m.now().UTC()
 	op.UpdatedAt = finished
 	op.FinishedAt = &finished
@@ -130,6 +133,11 @@ func (m *Manager) run(ctx context.Context, op Operation, task Task) {
 		op.Status = StatusFailed
 		op.ErrorCode = "operation_failed"
 		op.ErrorMessage = "operation failed"
+		if errors.Is(err, context.Canceled) {
+			op.Status = StatusUnknown
+			op.ErrorCode = "operation_canceled"
+			op.ErrorMessage = "operation was canceled before its result was known"
+		}
 		var failure *Failure
 		if errors.As(err, &failure) && failure != nil {
 			if failure.Code != "" {
@@ -158,6 +166,22 @@ func (m *Manager) run(ctx context.Context, op Operation, task Task) {
 
 func (m *Manager) Get(ctx context.Context, id string) (Operation, error) {
 	return m.repo.Get(ctx, id)
+}
+
+func (m *Manager) SetStep(ctx context.Context, id, step string) error {
+	if id == "" || step == "" {
+		return errors.New("operation id and step are required")
+	}
+	op, err := m.repo.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if op.Status != StatusPending && op.Status != StatusRunning {
+		return nil
+	}
+	op.CurrentStep = step
+	op.UpdatedAt = m.now().UTC()
+	return m.repo.Update(ctx, op)
 }
 
 func (m *Manager) Recover(ctx context.Context, resolver func(Operation) Task) error {

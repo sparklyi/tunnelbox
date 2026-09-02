@@ -8,20 +8,26 @@ import (
 )
 
 type Config struct {
-	ListenAddress  string
-	DatabasePath   string
-	WorkspaceID    string
-	WorkspaceName  string
-	AdminTokenFile string
+	ListenAddress       string
+	DatabasePath        string
+	WorkspaceID         string
+	WorkspaceName       string
+	AdminTokenFile      string
+	CloudflareTokenFile string
+	CloudflaredBinary   string
+	CloudflaredDataDir  string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		ListenAddress:  valueOr("TUNNELBOX_LISTEN", "127.0.0.1:8080"),
-		DatabasePath:   valueOr("TUNNELBOX_DATABASE", "data/tunnelbox.db"),
-		WorkspaceID:    valueOr("TUNNELBOX_WORKSPACE_ID", "default"),
-		WorkspaceName:  valueOr("TUNNELBOX_WORKSPACE_NAME", "Default"),
-		AdminTokenFile: strings.TrimSpace(os.Getenv("TUNNELBOX_ADMIN_TOKEN_FILE")),
+		ListenAddress:       valueOr("TUNNELBOX_LISTEN", "127.0.0.1:8080"),
+		DatabasePath:        valueOr("TUNNELBOX_DATABASE", "data/tunnelbox.db"),
+		WorkspaceID:         valueOr("TUNNELBOX_WORKSPACE_ID", "default"),
+		WorkspaceName:       valueOr("TUNNELBOX_WORKSPACE_NAME", "Default"),
+		AdminTokenFile:      strings.TrimSpace(os.Getenv("TUNNELBOX_ADMIN_TOKEN_FILE")),
+		CloudflareTokenFile: valueOr("TUNNELBOX_CLOUDFLARE_TOKEN_FILE", "data/cloudflare.token"),
+		CloudflaredBinary:   valueOr("TUNNELBOX_CLOUDFLARED_BINARY", "cloudflared"),
+		CloudflaredDataDir:  valueOr("TUNNELBOX_CLOUDFLARED_DATA_DIR", "data/cloudflared"),
 	}
 	if cfg.ListenAddress == "" {
 		return Config{}, fmt.Errorf("TUNNELBOX_LISTEN must not be empty")
@@ -31,6 +37,9 @@ func Load() (Config, error) {
 	}
 	if cfg.WorkspaceID == "" || cfg.WorkspaceName == "" {
 		return Config{}, fmt.Errorf("workspace id and name must not be empty")
+	}
+	if cfg.CloudflareTokenFile == "" || cfg.CloudflaredBinary == "" || cfg.CloudflaredDataDir == "" {
+		return Config{}, fmt.Errorf("cloudflare token file, cloudflared binary and data directory must not be empty")
 	}
 	if !isLoopbackAddress(cfg.ListenAddress) && cfg.AdminTokenFile == "" {
 		return Config{}, fmt.Errorf("TUNNELBOX_ADMIN_TOKEN_FILE is required for non-loopback listen address")

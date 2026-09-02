@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sparklyi/tunnelbox/internal/operation"
+	"github.com/sparklyi/tunnelbox/internal/provision"
 	"github.com/sparklyi/tunnelbox/internal/service"
 )
 
@@ -31,10 +32,22 @@ type ServiceDeployer interface {
 	Deploy(context.Context, string) (operation.Operation, error)
 }
 
+type CloudflareIntegration interface {
+	Configure(context.Context, provision.CloudflareConfigureInput) (provision.CloudflareIntegrationStatus, error)
+	Status(context.Context) (provision.CloudflareIntegrationStatus, error)
+	Zones(context.Context) ([]provision.Zone, error)
+}
+
+type ConnectorLister interface {
+	List(context.Context) ([]provision.ConnectorStatus, error)
+}
+
 type Dependencies struct {
 	Services   ServiceActions
 	Operations OperationReader
 	Deployer   ServiceDeployer
+	Cloudflare CloudflareIntegration
+	Connectors ConnectorLister
 	AdminToken string
 	Logger     *slog.Logger
 	Readiness  func(context.Context) error
@@ -67,6 +80,10 @@ func NewRouter(deps Dependencies) (*gin.Engine, error) {
 	})
 
 	api := router.Group("/api/v1")
+	api.PUT("/integrations/cloudflare", configureCloudflareHandler(deps.Cloudflare))
+	api.GET("/integrations/cloudflare/status", cloudflareStatusHandler(deps.Cloudflare))
+	api.GET("/zones", listZonesHandler(deps.Cloudflare))
+	api.GET("/connectors", listConnectorsHandler(deps.Connectors))
 	api.GET("/services", listServicesHandler(deps.Services))
 	api.POST("/services", createServiceHandler(deps.Services))
 	api.GET("/services/:id", getServiceHandler(deps.Services))

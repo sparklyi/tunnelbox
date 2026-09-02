@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sparklyi/tunnelbox/internal/operation"
+	"github.com/sparklyi/tunnelbox/internal/provision"
 	"github.com/sparklyi/tunnelbox/internal/service"
 )
 
@@ -58,6 +59,107 @@ type operationResponse struct {
 	UpdatedAt    string           `json:"updated_at"`
 	StartedAt    *string          `json:"started_at,omitempty"`
 	FinishedAt   *string          `json:"finished_at,omitempty"`
+}
+
+type cloudflareConfigureRequest struct {
+	AccountID string `json:"account_id"`
+	ZoneID    string `json:"zone_id"`
+	Token     string `json:"token"`
+}
+
+type cloudflareStatusResponse struct {
+	Configured bool   `json:"configured"`
+	AccountID  string `json:"account_id,omitempty"`
+	ZoneID     string `json:"zone_id,omitempty"`
+	TokenID    string `json:"token_id,omitempty"`
+	TokenState string `json:"token_state,omitempty"`
+	LastError  string `json:"last_error,omitempty"`
+}
+
+type zoneResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type connectorResponse struct {
+	ServiceID string `json:"service_id"`
+	Running   bool   `json:"running"`
+	Healthy   bool   `json:"healthy"`
+	Message   string `json:"message,omitempty"`
+}
+
+func configureCloudflareHandler(integration CloudflareIntegration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if integration == nil {
+			writeError(c, http.StatusNotImplemented, "integration_unavailable", "Cloudflare integration is not configured")
+			return
+		}
+		var request cloudflareConfigureRequest
+		if !decodeJSON(c, &request) {
+			return
+		}
+		status, err := integration.Configure(c.Request.Context(), provision.CloudflareConfigureInput{
+			AccountID: request.AccountID, ZoneID: request.ZoneID, Token: request.Token,
+		})
+		if err != nil {
+			writeDomainError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, makeCloudflareStatusResponse(status))
+	}
+}
+
+func cloudflareStatusHandler(integration CloudflareIntegration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if integration == nil {
+			writeError(c, http.StatusNotImplemented, "integration_unavailable", "Cloudflare integration is not configured")
+			return
+		}
+		status, err := integration.Status(c.Request.Context())
+		if err != nil {
+			writeDomainError(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, makeCloudflareStatusResponse(status))
+	}
+}
+
+func listZonesHandler(integration CloudflareIntegration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if integration == nil {
+			writeError(c, http.StatusNotImplemented, "integration_unavailable", "Cloudflare integration is not configured")
+			return
+		}
+		zones, err := integration.Zones(c.Request.Context())
+		if err != nil {
+			writeDomainError(c, err)
+			return
+		}
+		response := make([]zoneResponse, 0, len(zones))
+		for _, zone := range zones {
+			response = append(response, zoneResponse{ID: zone.ID, Name: zone.Name})
+		}
+		c.JSON(http.StatusOK, gin.H{"zones": response})
+	}
+}
+
+func listConnectorsHandler(lister ConnectorLister) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if lister == nil {
+			c.JSON(http.StatusOK, gin.H{"connectors": []connectorResponse{}})
+			return
+		}
+		items, err := lister.List(c.Request.Context())
+		if err != nil {
+			writeDomainError(c, err)
+			return
+		}
+		response := make([]connectorResponse, 0, len(items))
+		for _, item := range items {
+			response = append(response, connectorResponse{ServiceID: item.ServiceID, Running: item.Running, Healthy: item.Healthy, Message: item.Message})
+		}
+		c.JSON(http.StatusOK, gin.H{"connectors": response})
+	}
 }
 
 func listServicesHandler(actions ServiceActions) gin.HandlerFunc {
@@ -206,9 +308,13 @@ const timeFormat = "2006-01-02T15:04:05.999999999Z07:00"
 
 func writeDomainError(c *gin.Context, err error) {
 	var validation *service.ValidationError
+	var coded provision.CodedError
 	switch {
 	case errors.As(err, &validation):
 		writeError(c, http.StatusBadRequest, "invalid_request", validation.Error())
+	case errors.As(err, &coded):
+		code := safeErrorCode(coded.FailureCode())
+		writeError(c, statusForCode(code), code, messageForCode(code))
 	case errors.Is(err, service.ErrNotFound), errors.Is(err, operation.ErrNotFound):
 		writeError(c, http.StatusNotFound, "not_found", "resource was not found")
 	case errors.Is(err, service.ErrConflict), errors.Is(err, operation.ErrConflict):
@@ -218,6 +324,58 @@ func writeDomainError(c *gin.Context, err error) {
 	default:
 		writeError(c, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
+}
+
+func safeErrorCode(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" || len(code) > 64 {
+		return "internal_error"
+	}
+	for _, r := range code {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return "internal_error"
+		}
+	}
+	return code
+}
+
+func statusForCode(code string) int {
+	switch code {
+	case "cloudflare_configuration_invalid":
+		return http.StatusBadRequest
+	case "cloudflare_not_configured", "connector_not_running":
+		return http.StatusConflict
+	case "origin_unreachable", "cloudflare_unavailable", "cloudflare_timeout", "connector_start_failed":
+		return http.StatusBadGateway
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func messageForCode(code string) string {
+	switch code {
+	case "cloudflare_configuration_invalid":
+		return "Cloudflare configuration is invalid"
+	case "cloudflare_not_configured":
+		return "Cloudflare integration is not configured"
+	case "cloudflare_zone_not_available":
+		return "the selected Cloudflare zone is not available"
+	case "cloudflare_token_inactive":
+		return "the Cloudflare API token is not active"
+	case "cloudflare_token_path_unconfigured":
+		return "Cloudflare token storage is not configured"
+	case "connector_not_running":
+		return "connector is not running"
+	case "origin_unreachable":
+		return "origin cannot be reached from connector"
+	default:
+		return "request could not be completed"
+	}
+}
+
+func makeCloudflareStatusResponse(status provision.CloudflareIntegrationStatus) cloudflareStatusResponse {
+	return cloudflareStatusResponse{Configured: status.Configured, AccountID: status.AccountID, ZoneID: status.ZoneID,
+		TokenID: status.TokenID, TokenState: status.TokenState, LastError: status.LastError}
 }
 
 func writeError(c *gin.Context, status int, code, message string) {

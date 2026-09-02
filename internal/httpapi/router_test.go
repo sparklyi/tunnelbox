@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sparklyi/tunnelbox/internal/operation"
+	"github.com/sparklyi/tunnelbox/internal/provision"
 	"github.com/sparklyi/tunnelbox/internal/service"
 )
 
@@ -49,6 +50,20 @@ type fakeOperationReader struct{}
 func (fakeOperationReader) Get(context.Context, string) (operation.Operation, error) {
 	return operation.Operation{ID: "op_test", ServiceID: "svc_test", Kind: "deploy", Status: operation.StatusPending,
 		CreatedAt: time.Unix(0, 0).UTC(), UpdatedAt: time.Unix(0, 0).UTC()}, nil
+}
+
+type fakeCloudflareIntegration struct{}
+
+func (fakeCloudflareIntegration) Configure(context.Context, provision.CloudflareConfigureInput) (provision.CloudflareIntegrationStatus, error) {
+	return provision.CloudflareIntegrationStatus{Configured: true, AccountID: "acct", ZoneID: "zone", TokenID: "tok_1", TokenState: "active"}, nil
+}
+
+func (fakeCloudflareIntegration) Status(context.Context) (provision.CloudflareIntegrationStatus, error) {
+	return provision.CloudflareIntegrationStatus{Configured: true, AccountID: "acct", ZoneID: "zone"}, nil
+}
+
+func (fakeCloudflareIntegration) Zones(context.Context) ([]provision.Zone, error) {
+	return []provision.Zone{{ID: "zone", Name: "example.com"}}, nil
 }
 
 func TestRouterRequiresBearerTokenAndReturnsRequestID(t *testing.T) {
@@ -96,5 +111,33 @@ func TestRouterCreatesServiceWithBearerToken(t *testing.T) {
 	}
 	if len(services.items) != 1 || services.items[0].ID != "svc_test" {
 		t.Fatalf("services = %+v", services.items)
+	}
+}
+
+func TestRouterCloudflareIntegrationEndpointsDoNotReturnToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{},
+		Cloudflare: fakeCloudflareIntegration{}, AdminToken: "secret"})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/integrations/cloudflare", strings.NewReader(`{"account_id":"acct","zone_id":"zone","token":"super-secret"}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "super-secret") {
+		t.Fatalf("token leaked in response: %s", response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/zones", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "example.com") {
+		t.Fatalf("zones response = %d %s", response.Code, response.Body.String())
 	}
 }
