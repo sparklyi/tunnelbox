@@ -83,6 +83,12 @@ To temporarily take a service offline, click **Stop** in its row. This stops the
 Connector and keeps the Tunnel, Access policy, DNS record, and service settings. Click
 **Deploy** later to bring it back.
 
+To remove a service, click **Delete** and confirm. A draft or stopped service with no
+remote references is removed immediately. A managed service first stops its Connector,
+then removes only the Cloudflare resources recorded for that service, and finally removes
+the local record. The operation panel reports each cleanup step; failed cleanup keeps the
+service and remaining IDs so you can retry after fixing the credentials or permissions.
+
 Private is not a public DNS entry. Complete Zero Trust enrollment and configure
 [Split Tunnels](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/configure/route-traffic/split-tunnels/) so the target private IP is sent through WARP.
 
@@ -129,6 +135,8 @@ curl -X POST http://127.0.0.1:8080/api/v1/services/SERVICE_ID/deploy
 curl http://127.0.0.1:8080/api/v1/operations/OPERATION_ID
 # Stop the Connector later without deleting the service or Cloudflare resources
 curl -X POST http://127.0.0.1:8080/api/v1/services/SERVICE_ID/stop
+# Delete a service (returns 204 for a local delete or 202 with an operation)
+curl -X DELETE http://127.0.0.1:8080/api/v1/services/SERVICE_ID
 ```
 
 Health checks are available at `/healthz` and `/readyz`.

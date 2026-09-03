@@ -79,6 +79,11 @@ go run ./cmd/tunnelbox
 需要临时下线服务时，点击服务行中的“停止”。这只会停止本地 Connector，并保留 Tunnel、
 Access 策略、DNS 记录和服务配置；之后点击“部署”即可恢复，不会删除远端资源。
 
+需要移除服务时，点击服务行中的“删除”并确认。没有远端引用的草稿或已停止服务会立即
+删除；已部署服务会先停止 Connector，再按本服务记录的 ID 删除 TunnelBox 创建的 DNS、
+Access、私网路由和 Tunnel，最后删除本地记录。操作面板会显示每一步；如果某一步失败，
+服务和剩余远端 ID 会保留，修复 Token 或权限后可以再次点击“删除”重试。
+
 Private 不是普通公网 DNS 入口。需要先完成 Zero Trust 组织和设备注册，再配置
 [Split Tunnels](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/configure/route-traffic/split-tunnels/)，否则资源即使部署成功，访问者也可能无法连到私网 IP。
 
@@ -128,6 +133,8 @@ curl -X POST http://127.0.0.1:8080/api/v1/services/SERVICE_ID/deploy
 curl http://127.0.0.1:8080/api/v1/operations/OPERATION_ID
 # 之后停止 Connector，不删除服务或 Cloudflare 资源
 curl -X POST http://127.0.0.1:8080/api/v1/services/SERVICE_ID/stop
+# 删除服务（本地删除返回 204，远端清理返回 202 和操作 ID）
+curl -X DELETE http://127.0.0.1:8080/api/v1/services/SERVICE_ID
 ```
 
 健康检查为 `/healthz`，就绪检查为 `/readyz`。

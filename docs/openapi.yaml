@@ -132,9 +132,15 @@ paths:
         '400': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
     delete:
-      summary: Delete a service record
+      summary: Delete a service and its owned remote resources
+      description: Drafts without remote references are deleted immediately. Services with Cloudflare references start an asynchronous cleanup operation; poll the operation resource until it completes.
       responses:
         '204': { description: Deleted. }
+        '202':
+          description: Cleanup operation accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operation' }
         '409': { $ref: '#/components/responses/Error' }
   /api/v1/services/{id}/deploy:
     parameters:

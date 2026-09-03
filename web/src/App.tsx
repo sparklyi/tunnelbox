@@ -15,6 +15,7 @@ import {
   Save,
   Settings2,
   TerminalSquare,
+  Trash2,
   X,
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -197,6 +198,10 @@ function stateMeta(state: ServiceState) {
   }
 }
 
+function serviceHasRemoteResources(item: Service) {
+  return Boolean(item.tunnel_id || item.private_route_id || item.dns_record_id || item.access_application_id || item.access_policy_id || item.public_url);
+}
+
 function operationMeta(status: Operation["status"]) {
   switch (status) {
     case "succeeded":
@@ -210,6 +215,13 @@ function operationMeta(status: Operation["status"]) {
     default:
       return { label: "排队中", tone: "draft" };
   }
+}
+
+function operationLabel(kind: string) {
+  if (kind === "deploy") return "部署操作";
+  if (kind === "stop") return "停止操作";
+  if (kind === "delete") return "删除操作";
+  return "最近操作";
 }
 
 function Spinner({ size = 16 }: { size?: number }) {
@@ -238,6 +250,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [integrationOpen, setIntegrationOpen] = useState(false);
   const [editor, setEditor] = useState<Service | "new" | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Service | null>(null);
   const [guideOpen, setGuideOpen] = useState(() => !hasDismissedOnboarding());
 
   const loadData = useCallback(
@@ -341,6 +354,25 @@ function App() {
       await loadData(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "无法停止服务");
+    }
+  }
+
+  async function remove(item: Service) {
+    setDeleteTarget(null);
+    setError("");
+    setNotice("");
+    try {
+      const next = await request<Operation | null>(`/api/v1/services/${item.id}`, adminToken, { method: "DELETE" });
+      if (next?.operation_id) {
+        setOperation(next);
+        setNotice(`已开始删除 ${item.name}`);
+      } else {
+        setServices((current) => current.filter((entry) => entry.id !== item.id));
+        setNotice(`已删除 ${item.name}`);
+      }
+      await loadData(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "无法删除服务");
     }
   }
 
@@ -526,6 +558,7 @@ function App() {
                       const connector = connectors.find((entry) => entry.service_id === item.id);
                       const operationActive = operation?.service_id === item.id && ["pending", "running"].includes(operation.status);
                       const canStop = item.state === "active" || (item.state === "error" && connector?.running);
+                      const deleteBlocked = item.state === "deploying" || item.state === "stopping" || item.state === "active";
                       const access = mode === "quick"
                         ? "无需 Access（临时地址）"
                         : item.allow_type === "email_domain" ? `域 · ${item.allow_value || "-"}` : item.allow_value || "-";
@@ -542,6 +575,7 @@ function App() {
                           <td className="row-actions">
                             <button type="button" className="text-button" onClick={() => setEditor(item)} disabled={item.state === "deploying" || item.state === "stopping"}>编辑</button>
                             {canStop ? <button type="button" className="text-button stop-button" onClick={() => void stop(item)} disabled={operationActive} title="停止 Connector，保留 Cloudflare 资源"><Power size={14} />{operationActive && operation?.kind === "stop" ? "停止中" : "停止"}</button> : <button type="button" className="text-button deploy-button" onClick={() => void deploy(item)} disabled={item.state === "deploying" || item.state === "stopping" || operationActive}>{item.state === "deploying" ? "部署中" : item.state === "stopping" ? "停止中" : "部署"}</button>}
+                            <button type="button" className="text-button delete-button" onClick={() => setDeleteTarget(item)} disabled={deleteBlocked || operationActive} title={deleteBlocked ? "请先停止服务" : serviceHasRemoteResources(item) ? "删除服务及其绑定的 Cloudflare 资源" : "删除本地服务记录"}><Trash2 size={14} />删除</button>
                           </td>
                         </motion.tr>
                       );
@@ -556,7 +590,7 @@ function App() {
         <AnimatePresence>
           {operation && (
             <motion.section className={`operation-panel ${operationMeta(operation.status).tone}`} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }}>
-              <div className="operation-heading"><div><p className="eyebrow">{operation.kind === "stop" ? "停止操作" : "最近操作"}</p><strong>{services.find((item) => item.id === operation.service_id)?.name || operation.service_id}</strong></div><span className={`state-badge ${operationMeta(operation.status).tone}`}><span className="status-dot" />{operationMeta(operation.status).label}</span></div>
+              <div className="operation-heading"><div><p className="eyebrow">{operationLabel(operation.kind)}</p><strong>{services.find((item) => item.id === operation.service_id)?.name || operation.service_id}</strong></div><span className={`state-badge ${operationMeta(operation.status).tone}`}><span className="status-dot" />{operationMeta(operation.status).label}</span></div>
               <div className="operation-detail"><span>步骤：{operation.current_step || "等待开始"}</span><span>尝试 {operation.attempts}</span><code>{operation.operation_id}</code></div>
               {operation.error_message && <p className="operation-error">{operation.error_message}</p>}
             </motion.section>
@@ -570,6 +604,7 @@ function App() {
         {guideOpen && <GuideDialog onClose={closeGuide} onQuick={startQuick} onConfigure={startConfiguration} />}
         {integrationOpen && <IntegrationDialog initial={integration} zones={zones} token={adminToken} onClose={() => setIntegrationOpen(false)} onSaved={(next) => { setIntegration(next); setIntegrationOpen(false); void loadData(true); }} />}
         {editor && <ServiceDialog key={editor === "new" ? "new" : editor.id} value={editor === "new" ? null : editor} token={adminToken} onClose={() => setEditor(null)} onSaved={(saved) => { setEditor(null); setServices((current) => editor === "new" ? [...current, saved] : current.map((item) => item.id === saved.id ? saved : item)); setNotice(editor === "new" ? "服务已创建" : "服务已更新"); }} />}
+        {deleteTarget && <DeleteDialog value={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => void remove(deleteTarget)} />}
       </AnimatePresence>
       </div>
     </MotionConfig>
@@ -697,6 +732,25 @@ function IntegrationDialog({ initial, zones, token, onClose, onSaved }: { initia
           {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}
           <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? <Spinner /> : <Save size={16} />}{saving ? "验证中" : "保存并验证"}</button></div>
         </form>
+      </motion.aside>
+    </motion.div>
+  );
+}
+
+function DeleteDialog({ value, onClose, onConfirm }: { value: Service; onClose: () => void; onConfirm: () => void }) {
+  const hasRemote = serviceHasRemoteResources(value);
+  return (
+    <motion.div className="dialog-layer" role="presentation" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
+      <motion.aside className="dialog delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description" initial={{ y: 16, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 16, opacity: 0 }} transition={{ type: "spring", stiffness: 360, damping: 32 }}>
+        <div className="dialog-header">
+          <div className="delete-title-lockup"><div className="delete-icon" aria-hidden="true"><Trash2 size={20} /></div><div><p className="eyebrow">删除服务</p><h2 id="delete-dialog-title">确认删除？</h2></div></div>
+          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭" title="关闭"><X size={18} /></button>
+        </div>
+        <div className="delete-content">
+          <p id="delete-dialog-description">将删除「<strong>{value.name}</strong>」及其本地配置。</p>
+          {hasRemote ? <p className="delete-warning">该服务绑定了 Cloudflare 资源。确认后会停止 Connector，并删除 TunnelBox 创建的 DNS、Access、私网路由和 Tunnel。删除后无法恢复。</p> : <p className="delete-note">当前没有已绑定的远端资源，只会删除本地服务记录。</p>}
+        </div>
+        <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button type="button" className="button button-danger" onClick={onConfirm}><Trash2 size={16} />确认删除</button></div>
       </motion.aside>
     </motion.div>
   );
