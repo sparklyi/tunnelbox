@@ -3,6 +3,7 @@ package provision
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -81,9 +82,10 @@ func (p recordingDNS) EnsureCNAME(context.Context, CNAMESpec) (RemoteRef, error)
 }
 
 type recordingConnector struct {
-	calls  *[]string
-	specs  *[]ConnectorSpec
-	status ConnectorStatus
+	calls     *[]string
+	specs     *[]ConnectorSpec
+	status    ConnectorStatus
+	stopError error
 }
 
 func (p recordingConnector) EnsureRunning(_ context.Context, spec ConnectorSpec) error {
@@ -104,7 +106,10 @@ func (p recordingConnector) Status(context.Context, string) (ConnectorStatus, er
 	return ConnectorStatus{Running: true, Healthy: true}, nil
 }
 
-func (p recordingConnector) Stop(context.Context, string) error { return nil }
+func (p recordingConnector) Stop(context.Context, string) error {
+	*p.calls = append(*p.calls, "stop")
+	return p.stopError
+}
 
 func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 	db, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "tunnelbox.db"))
@@ -206,6 +211,112 @@ func TestDeployerQuickSkipsCloudflareAndPersistsTemporaryURL(t *testing.T) {
 	}
 	if loaded.State != service.StateActive || loaded.PublicURL != "https://preview.trycloudflare.com" || loaded.TunnelID != "" {
 		t.Fatalf("quick service after deploy = %+v", loaded)
+	}
+}
+
+func TestDeployerStopsQuickServiceAndClearsTemporaryURL(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Preview", Mode: service.ModeQuick, OriginURL: "http://127.0.0.1:3000",
+	})
+	defer db.Close()
+	item.State = service.StateActive
+	item.PublicURL = "https://preview.trycloudflare.com"
+	if err := services.SetRemoteRefs(context.Background(), item.ID, item.RemoteRefs); err != nil {
+		t.Fatalf("set remote refs: %v", err)
+	}
+	if err := services.SetState(context.Background(), item.ID, service.StateActive); err != nil {
+		t.Fatalf("set active state: %v", err)
+	}
+
+	var calls []string
+	deployer, err := NewDeployer(services, operations, nil, nil, nil, recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new stop deployer: %v", err)
+	}
+	op, err := deployer.Stop(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start stop: %v", err)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusSucceeded || current.Kind != "stop" {
+		t.Fatalf("stop operation = %+v", current)
+	}
+	if !reflect.DeepEqual(calls, []string{"stop"}) {
+		t.Fatalf("stop calls = %v", calls)
+	}
+	loaded, err := services.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("load stopped service: %v", err)
+	}
+	if loaded.State != service.StateStopped || loaded.PublicURL != "" {
+		t.Fatalf("quick service after stop = %+v", loaded)
+	}
+}
+
+func TestDeployerStopsManagedServiceAndKeepsRemoteReferences(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Public app", Mode: service.ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: service.AllowEmail, AllowValue: "user@example.com",
+	})
+	defer db.Close()
+	item.State = service.StateActive
+	item.RemoteRefs = service.RemoteRefs{TunnelID: "tun_1", DNSRecordID: "dns_1", AccessApplicationID: "app_1", AccessPolicyID: "policy_1"}
+	if err := services.SetRemoteRefs(context.Background(), item.ID, item.RemoteRefs); err != nil {
+		t.Fatalf("set remote refs: %v", err)
+	}
+	if err := services.SetState(context.Background(), item.ID, service.StateActive); err != nil {
+		t.Fatalf("set active state: %v", err)
+	}
+
+	var calls []string
+	deployer, err := NewDeployer(services, operations, nil, nil, nil, recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new stop deployer: %v", err)
+	}
+	op, err := deployer.Stop(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start stop: %v", err)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusSucceeded {
+		t.Fatalf("stop operation = %+v", current)
+	}
+	loaded, err := services.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("load stopped service: %v", err)
+	}
+	if loaded.State != service.StateStopped || loaded.RemoteRefs != item.RemoteRefs {
+		t.Fatalf("managed service after stop = %+v, want refs %+v", loaded, item.RemoteRefs)
+	}
+}
+
+func TestDeployerStopFailureMarksServiceError(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Preview", Mode: service.ModeQuick, OriginURL: "http://127.0.0.1:3000",
+	})
+	defer db.Close()
+	if err := services.SetState(context.Background(), item.ID, service.StateActive); err != nil {
+		t.Fatalf("set active state: %v", err)
+	}
+	var calls []string
+	deployer, err := NewDeployer(services, operations, nil, nil, nil, recordingConnector{calls: &calls, stopError: errors.New("stop failed")}, nil)
+	if err != nil {
+		t.Fatalf("new stop deployer: %v", err)
+	}
+	op, err := deployer.Stop(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start stop: %v", err)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusFailed || current.ErrorCode != "connector_stop_failed" {
+		t.Fatalf("failed stop operation = %+v", current)
+	}
+	loaded, err := services.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("load failed service: %v", err)
+	}
+	if loaded.State != service.StateError {
+		t.Fatalf("service state after failed stop = %s, want error", loaded.State)
 	}
 }
 
@@ -323,5 +434,8 @@ func TestDeployerResumeRejectsUnsupportedOperation(t *testing.T) {
 	deployer := &Deployer{}
 	if task := deployer.Resume(operation.Operation{Kind: "delete", ServiceID: "svc_1"}); task != nil {
 		t.Fatal("resume returned a task for an unsupported operation kind")
+	}
+	if task := deployer.Resume(operation.Operation{Kind: "stop", ServiceID: "svc_1"}); task == nil {
+		t.Fatal("resume did not return a task for a stop operation")
 	}
 }

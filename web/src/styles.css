@@ -123,6 +123,7 @@ code { color: #475569; font-family: ui-monospace, SFMono-Regular, Menlo, monospa
 .state-badge.working { color: var(--warning); background: var(--warning-soft); }
 .state-badge.error { color: var(--danger); background: var(--danger-soft); }
 .state-badge.draft { color: var(--muted); background: #f1f5f9; }
+.state-badge.stopped { color: #475569; background: #f1f5f9; }
 .state-badge.active .status-dot { color: var(--success); }
 .state-badge.working .status-dot { color: var(--warning); }
 .state-badge.error .status-dot { color: var(--danger); }
@@ -130,6 +131,8 @@ code { color: #475569; font-family: ui-monospace, SFMono-Regular, Menlo, monospa
 .row-actions { display: flex; justify-content: flex-end; gap: 10px; white-space: nowrap; }
 .text-button { border: 0; color: var(--muted); background: transparent; padding: 4px 0; font-size: 12px; }
 .text-button:hover, .text-button:focus-visible { color: var(--accent-dark); outline: none; text-decoration: underline; }
+.stop-button { display: inline-flex; align-items: center; gap: 4px; color: var(--danger); font-weight: 650; }
+.stop-button:hover, .stop-button:focus-visible { color: #8f1d14; }
 .deploy-button { color: var(--accent-dark); font-weight: 650; }
 .loading-state, .empty-state { min-height: 230px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--muted); font-size: 13px; text-align: center; padding: 28px; }
 .loading-state { flex-direction: row; }

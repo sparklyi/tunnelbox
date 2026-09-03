@@ -34,6 +34,11 @@ type ServiceDeployer interface {
 	Deploy(context.Context, string) (operation.Operation, error)
 }
 
+// ServiceStopper starts an asynchronous shutdown of one service's Connector.
+type ServiceStopper interface {
+	Stop(context.Context, string) (operation.Operation, error)
+}
+
 type CloudflareIntegration interface {
 	Configure(context.Context, provision.CloudflareConfigureInput) (provision.CloudflareIntegrationStatus, error)
 	Status(context.Context) (provision.CloudflareIntegrationStatus, error)
@@ -48,6 +53,7 @@ type Dependencies struct {
 	Services   ServiceActions
 	Operations OperationReader
 	Deployer   ServiceDeployer
+	Stopper    ServiceStopper
 	Cloudflare CloudflareIntegration
 	Connectors ConnectorLister
 	AdminToken string
@@ -93,6 +99,7 @@ func NewRouter(deps Dependencies) (*gin.Engine, error) {
 	api.PATCH("/services/:id", updateServiceHandler(deps.Services))
 	api.DELETE("/services/:id", deleteServiceHandler(deps.Services))
 	api.POST("/services/:id/deploy", deployServiceHandler(deps.Deployer))
+	api.POST("/services/:id/stop", stopServiceHandler(deps.Stopper))
 	api.GET("/operations/:id", getOperationHandler(deps.Operations))
 	if webDir := strings.TrimSpace(deps.WebDir); webDir != "" {
 		webDir = filepath.Clean(webDir)
@@ -107,6 +114,6 @@ func healthHandler(c *gin.Context) {
 }
 
 func contextForOperation(c *gin.Context) context.Context {
-	// A disconnected HTTP client must not cancel a deployment already accepted.
+	// A disconnected HTTP client must not cancel an operation already accepted.
 	return context.WithoutCancel(c.Request.Context())
 }

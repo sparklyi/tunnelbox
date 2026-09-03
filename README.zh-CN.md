@@ -24,6 +24,7 @@ Tunnel 发布出去。它以受控方式运行 `cloudflared`，创建所需的 C
 - 支持 `quick`、`private`、`public` 三种明确的发布模式
 - 为指定邮箱或邮箱域名创建 Cloudflare Access Allow 策略
 - 支持异步部署、进度查询，以及控制面重启后的未完成操作恢复
+- 可停止运行中的 Connector，但保留 Cloudflare 资源，之后可以再次部署
 - SQLite 保存本地状态；Cloudflare API Token 只写入权限为 `0600` 的 Secret 文件
 
 当前 MVP 只支持 Web Origin，不支持 SSH、TCP、RDP 或独立的远程 Connector，也不导入
@@ -75,6 +76,9 @@ go run ./cmd/tunnelbox
 6. 按模式验证入口：打开 Quick 地址；通过 WARP 访问 Private 私网 IP；或在普通浏览器
    打开 Public 域名并完成 Access 登录。
 
+需要临时下线服务时，点击服务行中的“停止”。这只会停止本地 Connector，并保留 Tunnel、
+Access 策略、DNS 记录和服务配置；之后点击“部署”即可恢复，不会删除远端资源。
+
 Private 不是普通公网 DNS 入口。需要先完成 Zero Trust 组织和设备注册，再配置
 [Split Tunnels](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/configure/route-traffic/split-tunnels/)，否则资源即使部署成功，访问者也可能无法连到私网 IP。
 
@@ -122,6 +126,8 @@ curl -X POST http://127.0.0.1:8080/api/v1/services \
   -d '{"mode":"quick","name":"本地预览","origin_url":"http://127.0.0.1:3000"}'
 curl -X POST http://127.0.0.1:8080/api/v1/services/SERVICE_ID/deploy
 curl http://127.0.0.1:8080/api/v1/operations/OPERATION_ID
+# 之后停止 Connector，不删除服务或 Cloudflare 资源
+curl -X POST http://127.0.0.1:8080/api/v1/services/SERVICE_ID/stop
 ```
 
 健康检查为 `/healthz`，就绪检查为 `/readyz`。

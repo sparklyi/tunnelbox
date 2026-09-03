@@ -43,11 +43,27 @@ func (d *Deployer) Deploy(ctx context.Context, serviceID string) (operation.Oper
 	})
 }
 
+// Stop starts an asynchronous shutdown of the service's local Connector.
+// Cloudflare resources and the service configuration are intentionally kept so
+// a later deployment can reuse them.
+func (d *Deployer) Stop(ctx context.Context, serviceID string) (operation.Operation, error) {
+	item, err := d.services.Get(ctx, serviceID)
+	if err != nil {
+		return operation.Operation{}, err
+	}
+	if item.State != service.StateActive && item.State != service.StateError && item.State != service.StateStopped {
+		return operation.Operation{}, service.ErrConflict
+	}
+	return d.operations.Start(ctx, serviceID, "stop", func(taskCtx context.Context, op operation.Operation) error {
+		return d.executeStop(taskCtx, op, item)
+	})
+}
+
 // Resume returns a task for an operation loaded from storage after a process
 // restart. The service is read again so remote references saved before the
 // interruption are honored on the next attempt.
 func (d *Deployer) Resume(op operation.Operation) operation.Task {
-	if op.Kind != "deploy" || op.ServiceID == "" {
+	if (op.Kind != "deploy" && op.Kind != "stop") || op.ServiceID == "" {
 		return nil
 	}
 	return func(ctx context.Context, current operation.Operation) error {
@@ -55,8 +71,48 @@ func (d *Deployer) Resume(op operation.Operation) operation.Task {
 		if err != nil {
 			return adapterFailure(err, "service_unavailable", "service could not be loaded for deployment")
 		}
+		if current.Kind == "stop" {
+			return d.executeStop(ctx, current, item)
+		}
 		return d.execute(ctx, current, item)
 	}
+}
+
+func (d *Deployer) executeStop(ctx context.Context, op operation.Operation, item service.Service) error {
+	setStep := func(step string) error {
+		if err := d.operations.SetStep(ctx, op.ID, step); err != nil {
+			return failure("operation_state_unavailable", "operation progress could not be saved", true)
+		}
+		return nil
+	}
+	setErrorState := func() {
+		_ = d.services.SetState(context.Background(), item.ID, service.StateError)
+	}
+	fail := func(err error, code, message string) error {
+		setErrorState()
+		return adapterFailure(err, code, message)
+	}
+
+	if err := d.services.SetState(ctx, item.ID, service.StateStopping); err != nil {
+		return fail(err, "service_state_unavailable", "service state could not be updated")
+	}
+	if err := setStep("connector_stop"); err != nil {
+		return err
+	}
+	if err := d.connector.Stop(ctx, item.ID); err != nil {
+		return fail(err, "connector_stop_failed", "cloudflared could not be stopped")
+	}
+	if item.Mode == service.ModeQuick && item.PublicURL != "" {
+		refs := item.RemoteRefs
+		refs.PublicURL = ""
+		if err := d.services.SetRemoteRefs(ctx, item.ID, refs); err != nil {
+			return fail(err, "service_state_unavailable", "quick tunnel URL could not be cleared")
+		}
+	}
+	if err := d.services.SetState(ctx, item.ID, service.StateStopped); err != nil {
+		return fail(err, "service_state_unavailable", "service state could not be updated")
+	}
+	return nil
 }
 
 func (d *Deployer) execute(ctx context.Context, op operation.Operation, item service.Service) error {
@@ -326,4 +382,5 @@ func failure(code, message string, unknown bool) error {
 
 var _ interface {
 	Deploy(context.Context, string) (operation.Operation, error)
+	Stop(context.Context, string) (operation.Operation, error)
 } = (*Deployer)(nil)

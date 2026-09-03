@@ -10,6 +10,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   Plus,
+  Power,
   RefreshCw,
   Save,
   Settings2,
@@ -18,7 +19,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type ServiceState = "draft" | "deploying" | "active" | "error";
+type ServiceState = "draft" | "deploying" | "stopping" | "active" | "stopped" | "error";
 type AllowType = "email" | "email_domain";
 type ExposureMode = "quick" | "private" | "public";
 type TokenState = "idle" | "checking" | "connected" | "invalid";
@@ -185,6 +186,10 @@ function stateMeta(state: ServiceState) {
       return { label: "运行中", tone: "active" };
     case "deploying":
       return { label: "部署中", tone: "working" };
+    case "stopping":
+      return { label: "停止中", tone: "working" };
+    case "stopped":
+      return { label: "已停止", tone: "stopped" };
     case "error":
       return { label: "异常", tone: "error" };
     default:
@@ -323,6 +328,19 @@ function App() {
       await loadData(true);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "无法开始部署");
+    }
+  }
+
+  async function stop(item: Service) {
+    setError("");
+    setNotice("");
+    try {
+      const next = await request<Operation>(`/api/v1/services/${item.id}/stop`, adminToken, { method: "POST" });
+      setOperation(next);
+      setNotice(`已开始停止 ${item.name}`);
+      await loadData(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "无法停止服务");
     }
   }
 
@@ -506,6 +524,8 @@ function App() {
                       const mode = serviceMode(item);
                       const modeInfo = modeMeta(mode);
                       const connector = connectors.find((entry) => entry.service_id === item.id);
+                      const operationActive = operation?.service_id === item.id && ["pending", "running"].includes(operation.status);
+                      const canStop = item.state === "active" || (item.state === "error" && connector?.running);
                       const access = mode === "quick"
                         ? "无需 Access（临时地址）"
                         : item.allow_type === "email_domain" ? `域 · ${item.allow_value || "-"}` : item.allow_value || "-";
@@ -519,7 +539,10 @@ function App() {
                           </div></td>
                           <td data-label="访问条件"><span className="access-value">{access}</span></td>
                           <td data-label="状态"><div className="state-cell"><span className={`state-badge ${state.tone}`}><span className="status-dot" />{state.label}</span>{connector?.running && <span className="connector-note">Connector 在线</span>}</div></td>
-                          <td className="row-actions"><button type="button" className="text-button" onClick={() => setEditor(item)}>编辑</button><button type="button" className="text-button deploy-button" onClick={() => void deploy(item)} disabled={item.state === "deploying"}>{item.state === "deploying" ? "部署中" : "部署"}</button></td>
+                          <td className="row-actions">
+                            <button type="button" className="text-button" onClick={() => setEditor(item)} disabled={item.state === "deploying" || item.state === "stopping"}>编辑</button>
+                            {canStop ? <button type="button" className="text-button stop-button" onClick={() => void stop(item)} disabled={operationActive} title="停止 Connector，保留 Cloudflare 资源"><Power size={14} />{operationActive && operation?.kind === "stop" ? "停止中" : "停止"}</button> : <button type="button" className="text-button deploy-button" onClick={() => void deploy(item)} disabled={item.state === "deploying" || item.state === "stopping" || operationActive}>{item.state === "deploying" ? "部署中" : item.state === "stopping" ? "停止中" : "部署"}</button>}
+                          </td>
                         </motion.tr>
                       );
                     })}
@@ -533,7 +556,7 @@ function App() {
         <AnimatePresence>
           {operation && (
             <motion.section className={`operation-panel ${operationMeta(operation.status).tone}`} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }}>
-              <div className="operation-heading"><div><p className="eyebrow">最近操作</p><strong>{services.find((item) => item.id === operation.service_id)?.name || operation.service_id}</strong></div><span className={`state-badge ${operationMeta(operation.status).tone}`}><span className="status-dot" />{operationMeta(operation.status).label}</span></div>
+              <div className="operation-heading"><div><p className="eyebrow">{operation.kind === "stop" ? "停止操作" : "最近操作"}</p><strong>{services.find((item) => item.id === operation.service_id)?.name || operation.service_id}</strong></div><span className={`state-badge ${operationMeta(operation.status).tone}`}><span className="status-dot" />{operationMeta(operation.status).label}</span></div>
               <div className="operation-detail"><span>步骤：{operation.current_step || "等待开始"}</span><span>尝试 {operation.attempts}</span><code>{operation.operation_id}</code></div>
               {operation.error_message && <p className="operation-error">{operation.error_message}</p>}
             </motion.section>

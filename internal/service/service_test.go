@@ -224,6 +224,24 @@ func TestUseCaseUpdateBlocksActiveService(t *testing.T) {
 	}
 }
 
+func TestUseCaseUpdateBlocksStoppingService(t *testing.T) {
+	repo := newMemoryRepository()
+	useCase := NewUseCase(repo, "workspace")
+	item, err := useCase.Create(context.Background(), CreateInput{
+		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: AllowEmail, AllowValue: "user@example.com",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	item.State = StateStopping
+	repo.items[item.ID] = item
+	newName := "Changed"
+	if _, err := useCase.Update(context.Background(), item.ID, UpdateInput{Name: &newName}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("update error = %v, want conflict", err)
+	}
+}
+
 func TestUseCaseUpdateBlocksModeChangeWithRemoteRefs(t *testing.T) {
 	repo := newMemoryRepository()
 	useCase := NewUseCase(repo, "workspace")

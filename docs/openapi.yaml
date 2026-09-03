@@ -148,6 +148,20 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Operation' }
         '409': { $ref: '#/components/responses/Error' }
+  /api/v1/services/{id}/stop:
+    parameters:
+      - { $ref: '#/components/parameters/ServiceID' }
+    post:
+      summary: Start an asynchronous Connector shutdown
+      description: Stops the local cloudflared process while retaining Cloudflare resources and service configuration for a later deployment.
+      responses:
+        '202':
+          description: Operation accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Operation' }
+        '409': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /api/v1/operations/{id}:
     parameters:
       - name: id
@@ -155,7 +169,7 @@ paths:
         required: true
         schema: { type: string }
     get:
-      summary: Read deployment progress
+      summary: Read operation progress
       responses:
         '200':
           description: Operation.
@@ -262,7 +276,7 @@ components:
           required: [id, state, created_at, updated_at]
           properties:
             id: { type: string }
-            state: { type: string, enum: [draft, deploying, active, error] }
+            state: { type: string, enum: [draft, deploying, stopping, active, stopped, error] }
             tunnel_id: { type: string }
             private_route_id: { type: string }
             dns_record_id: { type: string }

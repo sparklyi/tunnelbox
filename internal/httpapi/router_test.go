@@ -54,6 +54,16 @@ func (fakeOperationReader) Get(context.Context, string) (operation.Operation, er
 		CreatedAt: time.Unix(0, 0).UTC(), UpdatedAt: time.Unix(0, 0).UTC()}, nil
 }
 
+type fakeServiceStopper struct {
+	called bool
+}
+
+func (f *fakeServiceStopper) Stop(context.Context, string) (operation.Operation, error) {
+	f.called = true
+	return operation.Operation{ID: "op_stop", ServiceID: "svc_test", Kind: "stop", Status: operation.StatusPending,
+		CreatedAt: time.Unix(0, 0).UTC(), UpdatedAt: time.Unix(0, 0).UTC()}, nil
+}
+
 type fakeCloudflareIntegration struct{}
 
 func (fakeCloudflareIntegration) Configure(context.Context, provision.CloudflareConfigureInput) (provision.CloudflareIntegrationStatus, error) {
@@ -131,6 +141,25 @@ func TestRouterCreatesServiceWithBearerToken(t *testing.T) {
 	}
 	if len(services.items) != 1 || services.items[0].ID != "svc_test" {
 		t.Fatalf("services = %+v", services.items)
+	}
+}
+
+func TestRouterStopsServiceWithBearerToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stopper := &fakeServiceStopper{}
+	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Stopper: stopper, AdminToken: "secret"})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/services/svc_test/stop", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !stopper.called || !strings.Contains(response.Body.String(), `"kind":"stop"`) {
+		t.Fatalf("stop response = %s, called = %v", response.Body.String(), stopper.called)
 	}
 }
 

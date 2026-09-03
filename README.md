@@ -25,6 +25,7 @@ control. Use `public` only when you own the target Cloudflare zone.
 - Support three explicit modes: `quick`, `private`, and `public`.
 - Create Cloudflare Access Allow policies for an email or email domain.
 - Track asynchronous deployments and resume incomplete operations after a restart.
+- Stop a running Connector without deleting its Cloudflare resources, then deploy it again later.
 - Store local state in SQLite; Cloudflare API Tokens are written only to an owner-only
   (`0600`) Secret file.
 
@@ -78,6 +79,10 @@ or public bind requires `TUNNELBOX_ADMIN_TOKEN_FILE` pointing to a `0600` file.
 6. Verify the mode-specific entry: open the Quick URL, use WARP for the Private IP, or
    open the Public hostname and complete the Access login.
 
+To temporarily take a service offline, click **Stop** in its row. This stops the local
+Connector and keeps the Tunnel, Access policy, DNS record, and service settings. Click
+**Deploy** later to bring it back.
+
 Private is not a public DNS entry. Complete Zero Trust enrollment and configure
 [Split Tunnels](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/configure/route-traffic/split-tunnels/) so the target private IP is sent through WARP.
 
@@ -122,6 +127,8 @@ curl -X POST http://127.0.0.1:8080/api/v1/services \
   -d '{"mode":"quick","name":"Local preview","origin_url":"http://127.0.0.1:3000"}'
 curl -X POST http://127.0.0.1:8080/api/v1/services/SERVICE_ID/deploy
 curl http://127.0.0.1:8080/api/v1/operations/OPERATION_ID
+# Stop the Connector later without deleting the service or Cloudflare resources
+curl -X POST http://127.0.0.1:8080/api/v1/services/SERVICE_ID/stop
 ```
 
 Health checks are available at `/healthz` and `/readyz`.

@@ -256,6 +256,21 @@ func deployServiceHandler(deployer ServiceDeployer) gin.HandlerFunc {
 	}
 }
 
+func stopServiceHandler(stopper ServiceStopper) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if stopper == nil {
+			writeError(c, http.StatusNotImplemented, "stop_unavailable", "service stop is not configured")
+			return
+		}
+		op, err := stopper.Stop(contextForOperation(c), c.Param("id"))
+		if err != nil {
+			writeDomainError(c, err)
+			return
+		}
+		c.JSON(http.StatusAccepted, makeOperationResponse(op))
+	}
+}
+
 func getOperationHandler(reader OperationReader) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		op, err := reader.Get(c.Request.Context(), c.Param("id"))
@@ -379,7 +394,7 @@ func statusForCode(code string) int {
 	case "cloudflare_not_configured", "connector_not_running":
 		return http.StatusConflict
 	case "origin_unreachable", "cloudflare_unavailable", "cloudflare_timeout", "connector_start_failed",
-		"quick_tunnel_start_failed", "quick_tunnel_url_unavailable", "private_route_failed",
+		"connector_stop_failed", "quick_tunnel_start_failed", "quick_tunnel_url_unavailable", "private_route_failed",
 		"tunnel_unavailable", "tunnel_route_failed", "access_application_failed", "access_policy_failed",
 		"access_policy_attach_failed", "dns_failed", "connector_unhealthy":
 		return http.StatusBadGateway
@@ -418,6 +433,8 @@ func messageForCode(code string) string {
 		return "quick tunnel did not provide a public URL"
 	case "connector_unhealthy":
 		return "connector did not become healthy"
+	case "connector_stop_failed":
+		return "cloudflared could not be stopped"
 	default:
 		return "request could not be completed"
 	}
