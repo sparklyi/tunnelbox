@@ -54,9 +54,15 @@ a { color: inherit; text-decoration: none; }
 .topbar h1 { margin: 6px 0 0; font-size: 32px; line-height: 1.1; letter-spacing: 0; font-weight: 700; }
 .topbar-actions { display: flex; gap: 9px; align-items: center; }
 .guide-trigger { flex: none; }
+.token-form { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .token-field { display: flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--muted); padding: 7px 10px; }
 .token-field input { width: 150px; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 12px; }
+.token-field input:disabled { color: var(--muted); }
 .token-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14); }
+.token-submit { min-height: 36px; }
+.token-feedback { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.token-feedback.success { color: var(--success); }
+.token-feedback.error { color: var(--danger); }
 .icon-button { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--surface); }
 .icon-button:hover, .icon-button:focus-visible { color: var(--accent-dark); border-color: var(--accent); outline: none; }
 
@@ -201,6 +207,7 @@ code { color: #475569; font-family: ui-monospace, SFMono-Regular, Menlo, monospa
   .main-content { padding: 18px 14px 22px; }
   .topbar { align-items: flex-start; flex-direction: column; }
   .topbar-actions { width: 100%; flex-wrap: wrap; }
+  .token-form { flex: 1 1 100%; }
   .token-field { min-width: 0; flex: 1 1 150px; }
   .token-field input { width: 100%; }
   .integration-strip { align-items: flex-start; flex-wrap: wrap; padding: 14px; }
@@ -226,7 +233,8 @@ code { color: #475569; font-family: ui-monospace, SFMono-Regular, Menlo, monospa
 
 @media (max-width: 460px) {
   .guide-trigger { flex: 1; }
-  .token-field { order: 3; flex-basis: 100%; }
+  .token-form { order: 3; flex-basis: 100%; width: 100%; }
+  .token-field { flex: 1 1 auto; }
   .guide-actions .button { flex: 1; }
 }
 

@@ -21,6 +21,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 type ServiceState = "draft" | "deploying" | "active" | "error";
 type AllowType = "email" | "email_domain";
 type ExposureMode = "quick" | "private" | "public";
+type TokenState = "idle" | "checking" | "connected" | "invalid";
 
 type Service = {
   id: string;
@@ -218,6 +219,7 @@ function App() {
   const [adminToken, setAdminToken] = useState(getStoredToken);
   const [tokenDraft, setTokenDraft] = useState(adminToken);
   const adminTokenRef = useRef(adminToken);
+  const loadGenerationRef = useRef(0);
   const [integration, setIntegration] = useState<IntegrationStatus>(emptyIntegration);
   const [zones, setZones] = useState<Zone[]>([]);
   const [services, setServices] = useState<Service[]>([]);
@@ -226,6 +228,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
+  const [tokenState, setTokenState] = useState<TokenState>(adminToken ? "checking" : "idle");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [integrationOpen, setIntegrationOpen] = useState(false);
@@ -233,36 +236,50 @@ function App() {
   const [guideOpen, setGuideOpen] = useState(() => !hasDismissedOnboarding());
 
   const loadData = useCallback(
-    async (showRefresh = false) => {
+    async (showRefresh = false, tokenOverride?: string): Promise<boolean> => {
+      const requestToken = tokenOverride ?? adminTokenRef.current;
+      const generation = ++loadGenerationRef.current;
+      const isCurrentLoad = () => generation === loadGenerationRef.current;
       if (showRefresh) setRefreshing(true);
       else setLoading(true);
-      setError("");
+      if (isCurrentLoad()) setError("");
       try {
         const [status, servicePayload, connectorPayload] = await Promise.all([
-          request<IntegrationStatus>("/api/v1/integrations/cloudflare/status", adminTokenRef.current),
-          request<{ services: Service[] }>("/api/v1/services", adminTokenRef.current),
-          request<{ connectors: Connector[] }>("/api/v1/connectors", adminTokenRef.current),
+          request<IntegrationStatus>("/api/v1/integrations/cloudflare/status", requestToken),
+          request<{ services: Service[] }>("/api/v1/services", requestToken),
+          request<{ connectors: Connector[] }>("/api/v1/connectors", requestToken),
         ]);
+        if (!isCurrentLoad()) return false;
         setIntegration(status);
         setServices(servicePayload.services || []);
         setConnectors(connectorPayload.connectors || []);
         if (status.configured && status.zone_id) {
-          const zonePayload = await request<{ zones: Zone[] }>("/api/v1/zones", adminTokenRef.current);
+          const zonePayload = await request<{ zones: Zone[] }>("/api/v1/zones", requestToken);
+          if (!isCurrentLoad()) return false;
           setZones(zonePayload.zones || []);
         } else {
           setZones([]);
         }
         setAuthRequired(false);
+        if (requestToken && requestToken === adminTokenRef.current) setTokenState("connected");
+        return true;
       } catch (caught) {
+        if (!isCurrentLoad()) return false;
         if (caught instanceof ApiError && caught.status === 401) {
-          setAuthRequired(true);
-          setError("需要管理员令牌才能访问控制面");
+          if (requestToken === adminTokenRef.current) {
+            setAuthRequired(true);
+            setError("需要管理员令牌才能访问控制面");
+            if (requestToken) setTokenState("invalid");
+          }
         } else {
           setError(caught instanceof Error ? caught.message : "无法加载控制面数据");
         }
+        return false;
       } finally {
-        setLoading(false);
-        setRefreshing(false);
+        if (isCurrentLoad()) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     },
     []
@@ -309,13 +326,37 @@ function App() {
     }
   }
 
-  function applyToken() {
+  async function submitToken(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     const next = tokenDraft.trim();
-    if (next === adminToken) return;
+    setError("");
+    setNotice("");
+    if (!next) {
+      adminTokenRef.current = "";
+      setAdminToken("");
+      storeToken("");
+      setAuthRequired(true);
+      setTokenState("invalid");
+      setError("请输入管理员令牌");
+      return;
+    }
+
+    setTokenState("checking");
+    try {
+      await request<IntegrationStatus>("/api/v1/integrations/cloudflare/status", next);
+    } catch (caught) {
+      setTokenState("invalid");
+      setError(caught instanceof ApiError && caught.status === 401 ? "管理员令牌无效，请检查后重试" : caught instanceof Error ? caught.message : "令牌验证失败");
+      return;
+    }
+
     adminTokenRef.current = next;
     setAdminToken(next);
     storeToken(next);
-    void loadData(true);
+    setAuthRequired(false);
+    setTokenState("connected");
+    setNotice("管理员令牌已验证");
+    await loadData(true, next);
   }
 
   function closeGuide() {
@@ -370,19 +411,27 @@ function App() {
             <button type="button" className="button button-secondary guide-trigger" onClick={() => setGuideOpen(true)} title="打开使用指南">
               <CircleHelp size={16} />使用指南
             </button>
-            <label className="token-field">
-              <LockKeyhole size={14} aria-hidden="true" />
-              <span className="sr-only">管理员令牌</span>
-              <input
-                type="password"
-                value={tokenDraft}
-                onChange={(event) => setTokenDraft(event.target.value)}
-                onBlur={applyToken}
-                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); applyToken(); } }}
-                placeholder="管理员令牌"
-                autoComplete="off"
-              />
-            </label>
+            <form className="token-form" onSubmit={submitToken}>
+              <label className="token-field">
+                <LockKeyhole size={14} aria-hidden="true" />
+                <span className="sr-only">管理员令牌</span>
+                <input
+                  type="password"
+                  value={tokenDraft}
+                  onChange={(event) => { setTokenDraft(event.target.value); setTokenState("idle"); setError(""); }}
+                  placeholder="管理员令牌"
+                  autoComplete="off"
+                  aria-invalid={tokenState === "invalid"}
+                  disabled={tokenState === "checking"}
+                />
+              </label>
+              <button type="submit" className="button button-primary token-submit" disabled={tokenState === "checking"}>
+                {tokenState === "checking" ? <Spinner size={15} /> : tokenState === "connected" ? <Check size={15} /> : <ArrowRight size={15} />}
+                {tokenState === "checking" ? "验证中" : tokenState === "connected" ? "已连接" : "连接"}
+              </button>
+              {tokenState === "connected" && <span className="token-feedback success" role="status"><Check size={13} />令牌有效</span>}
+              {tokenState === "invalid" && <span className="token-feedback error" role="alert"><CircleAlert size={13} />令牌无效</span>}
+            </form>
             <button className="icon-button" type="button" onClick={() => void loadData(true)} title="刷新数据" aria-label="刷新数据">
               {refreshing ? <Spinner size={17} /> : <RefreshCw size={17} />}
             </button>
