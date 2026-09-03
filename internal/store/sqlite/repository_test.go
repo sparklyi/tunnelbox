@@ -61,3 +61,37 @@ func TestRepositoriesRoundTrip(t *testing.T) {
 		t.Fatalf("active after completion = %v, want not found", err)
 	}
 }
+
+func TestDeletingServiceKeepsOperationHistory(t *testing.T) {
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "tunnelbox.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	store := NewStore(db)
+	ctx := context.Background()
+	if err := store.EnsureWorkspace(ctx, "default", "Default"); err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	now := time.Now().UTC()
+	item := service.Service{ID: "svc_delete", WorkspaceID: "default", Name: "Draft", Mode: service.ModeQuick,
+		Hostname: "quick-svc_delete.invalid", OriginURL: "http://127.0.0.1:3000", State: service.StateDraft,
+		CreatedAt: now, UpdatedAt: now}
+	if err := store.Services().Create(ctx, item); err != nil {
+		t.Fatalf("create service: %v", err)
+	}
+	op := operation.Operation{ID: "op_delete", ServiceID: item.ID, Kind: "delete", Status: operation.StatusSucceeded, CreatedAt: now, UpdatedAt: now}
+	if err := store.Operations().Create(ctx, op); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	if err := store.Services().Delete(ctx, item.WorkspaceID, item.ID); err != nil {
+		t.Fatalf("delete service: %v", err)
+	}
+	history, err := store.Operations().Get(ctx, op.ID)
+	if err != nil {
+		t.Fatalf("get operation history: %v", err)
+	}
+	if history.ServiceID != item.ID || history.Kind != "delete" {
+		t.Fatalf("operation history = %+v", history)
+	}
+}

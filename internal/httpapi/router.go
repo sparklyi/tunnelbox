@@ -39,6 +39,12 @@ type ServiceStopper interface {
 	Stop(context.Context, string) (operation.Operation, error)
 }
 
+// ServiceDeleter removes a service immediately or starts its asynchronous
+// remote cleanup. A zero operation means the local record was deleted.
+type ServiceDeleter interface {
+	Delete(context.Context, string) (operation.Operation, error)
+}
+
 type CloudflareIntegration interface {
 	Configure(context.Context, provision.CloudflareConfigureInput) (provision.CloudflareIntegrationStatus, error)
 	Status(context.Context) (provision.CloudflareIntegrationStatus, error)
@@ -54,6 +60,7 @@ type Dependencies struct {
 	Operations OperationReader
 	Deployer   ServiceDeployer
 	Stopper    ServiceStopper
+	Deleter    ServiceDeleter
 	Cloudflare CloudflareIntegration
 	Connectors ConnectorLister
 	AdminToken string
@@ -97,7 +104,7 @@ func NewRouter(deps Dependencies) (*gin.Engine, error) {
 	api.POST("/services", createServiceHandler(deps.Services))
 	api.GET("/services/:id", getServiceHandler(deps.Services))
 	api.PATCH("/services/:id", updateServiceHandler(deps.Services))
-	api.DELETE("/services/:id", deleteServiceHandler(deps.Services))
+	api.DELETE("/services/:id", deleteServiceHandler(deps.Services, deps.Deleter))
 	api.POST("/services/:id/deploy", deployServiceHandler(deps.Deployer))
 	api.POST("/services/:id/stop", stopServiceHandler(deps.Stopper))
 	api.GET("/operations/:id", getOperationHandler(deps.Operations))

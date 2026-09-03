@@ -64,6 +64,16 @@ func (f *fakeServiceStopper) Stop(context.Context, string) (operation.Operation,
 		CreatedAt: time.Unix(0, 0).UTC(), UpdatedAt: time.Unix(0, 0).UTC()}, nil
 }
 
+type fakeServiceDeleter struct {
+	called bool
+}
+
+func (f *fakeServiceDeleter) Delete(context.Context, string) (operation.Operation, error) {
+	f.called = true
+	return operation.Operation{ID: "op_delete", ServiceID: "svc_test", Kind: "delete", Status: operation.StatusPending,
+		CreatedAt: time.Unix(0, 0).UTC(), UpdatedAt: time.Unix(0, 0).UTC()}, nil
+}
+
 type fakeCloudflareIntegration struct{}
 
 func (fakeCloudflareIntegration) Configure(context.Context, provision.CloudflareConfigureInput) (provision.CloudflareIntegrationStatus, error) {
@@ -160,6 +170,25 @@ func TestRouterStopsServiceWithBearerToken(t *testing.T) {
 	}
 	if !stopper.called || !strings.Contains(response.Body.String(), `"kind":"stop"`) {
 		t.Fatalf("stop response = %s, called = %v", response.Body.String(), stopper.called)
+	}
+}
+
+func TestRouterDeletesServiceWithBearerToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	deleter := &fakeServiceDeleter{}
+	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Deleter: deleter, AdminToken: "secret"})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodDelete, "/api/v1/services/svc_test", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !deleter.called || !strings.Contains(response.Body.String(), `"kind":"delete"`) {
+		t.Fatalf("delete response = %s, called = %v", response.Body.String(), deleter.called)
 	}
 }
 

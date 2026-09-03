@@ -81,6 +81,48 @@ func (p recordingDNS) EnsureCNAME(context.Context, CNAMESpec) (RemoteRef, error)
 	return RemoteRef{ID: "dns_1"}, nil
 }
 
+type cleanupTunnel struct {
+	recordingTunnel
+	privateRouteError error
+	tunnelError       error
+}
+
+func (p cleanupTunnel) DeletePrivateRoute(context.Context, string) error {
+	*p.calls = append(*p.calls, "private_route_delete")
+	return p.privateRouteError
+}
+
+func (p cleanupTunnel) DeleteTunnel(context.Context, string) error {
+	*p.calls = append(*p.calls, "tunnel_delete")
+	return p.tunnelError
+}
+
+type cleanupAccess struct {
+	recordingAccess
+	policyError      error
+	applicationError error
+}
+
+func (p cleanupAccess) DeletePolicy(context.Context, string, string) error {
+	*p.calls = append(*p.calls, "policy_delete")
+	return p.policyError
+}
+
+func (p cleanupAccess) DeleteApplication(context.Context, string) error {
+	*p.calls = append(*p.calls, "application_delete")
+	return p.applicationError
+}
+
+type cleanupDNS struct {
+	recordingDNS
+	deleteError error
+}
+
+func (p cleanupDNS) DeleteCNAME(context.Context, string) error {
+	*p.calls = append(*p.calls, "dns_delete")
+	return p.deleteError
+}
+
 type recordingConnector struct {
 	calls     *[]string
 	specs     *[]ConnectorSpec
@@ -290,6 +332,121 @@ func TestDeployerStopsManagedServiceAndKeepsRemoteReferences(t *testing.T) {
 	}
 }
 
+func TestDeployerDeletesManagedServiceAndKeepsOperationHistory(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Public app", Mode: service.ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: service.AllowEmail, AllowValue: "user@example.com",
+	})
+	defer db.Close()
+	refs := service.RemoteRefs{TunnelID: "tun_1", DNSRecordID: "dns_1", AccessApplicationID: "app_1", AccessPolicyID: "policy_1"}
+	if err := services.SetRemoteRefs(context.Background(), item.ID, refs); err != nil {
+		t.Fatalf("set remote refs: %v", err)
+	}
+	if err := services.SetState(context.Background(), item.ID, service.StateStopped); err != nil {
+		t.Fatalf("set stopped state: %v", err)
+	}
+
+	var calls []string
+	deployer, err := NewDeployer(services, operations,
+		cleanupTunnel{recordingTunnel: recordingTunnel{calls: &calls}},
+		cleanupAccess{recordingAccess: recordingAccess{calls: &calls}},
+		cleanupDNS{recordingDNS: recordingDNS{calls: &calls}},
+		recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new delete deployer: %v", err)
+	}
+	op, err := deployer.Delete(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start delete: %v", err)
+	}
+	if op.ID == "" || op.Kind != "delete" {
+		t.Fatalf("delete operation = %+v", op)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusSucceeded {
+		t.Fatalf("delete operation = %+v", current)
+	}
+	wantCalls := []string{"stop", "dns_delete", "policy_delete", "application_delete", "tunnel_delete"}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Fatalf("delete calls = %v, want %v", calls, wantCalls)
+	}
+	if _, err := services.Get(context.Background(), item.ID); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("deleted service lookup = %v, want not found", err)
+	}
+	history, err := operations.Get(context.Background(), op.ID)
+	if err != nil {
+		t.Fatalf("get delete operation history: %v", err)
+	}
+	if history.Status != operation.StatusSucceeded || history.Kind != "delete" || history.ServiceID != item.ID {
+		t.Fatalf("delete operation history = %+v", history)
+	}
+}
+
+func TestDeployerDeletesDraftLocallyWithoutStartingOperation(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{Name: "Draft", Mode: service.ModeQuick, OriginURL: "http://127.0.0.1:3000"})
+	defer db.Close()
+	var calls []string
+	deployer, err := NewDeployer(services, operations, nil, nil, nil, recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new delete deployer: %v", err)
+	}
+	op, err := deployer.Delete(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("delete draft: %v", err)
+	}
+	if op.ID != "" {
+		t.Fatalf("draft delete unexpectedly started operation: %+v", op)
+	}
+	if _, err := services.Get(context.Background(), item.ID); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("draft lookup after delete = %v, want not found", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("draft delete started connector calls: %v", calls)
+	}
+}
+
+func TestDeployerDeleteFailureKeepsRemainingReferences(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Public app", Mode: service.ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: service.AllowEmail, AllowValue: "user@example.com",
+	})
+	defer db.Close()
+	refs := service.RemoteRefs{TunnelID: "tun_1", DNSRecordID: "dns_1", AccessApplicationID: "app_1", AccessPolicyID: "policy_1"}
+	if err := services.SetRemoteRefs(context.Background(), item.ID, refs); err != nil {
+		t.Fatalf("set remote refs: %v", err)
+	}
+	if err := services.SetState(context.Background(), item.ID, service.StateStopped); err != nil {
+		t.Fatalf("set stopped state: %v", err)
+	}
+	var calls []string
+	deployer, err := NewDeployer(services, operations,
+		cleanupTunnel{recordingTunnel: recordingTunnel{calls: &calls}},
+		cleanupAccess{recordingAccess: recordingAccess{calls: &calls}},
+		cleanupDNS{recordingDNS: recordingDNS{calls: &calls}, deleteError: errors.New("dns unavailable")},
+		recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new delete deployer: %v", err)
+	}
+	op, err := deployer.Delete(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start delete: %v", err)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusFailed || current.ErrorCode != "dns_delete_failed" {
+		t.Fatalf("failed delete operation = %+v", current)
+	}
+	loaded, err := services.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("load service after failed delete: %v", err)
+	}
+	if loaded.State != service.StateError || loaded.RemoteRefs != refs {
+		t.Fatalf("service after failed delete = %+v, want state error and refs %+v", loaded, refs)
+	}
+	if !reflect.DeepEqual(calls, []string{"stop", "dns_delete"}) {
+		t.Fatalf("failed delete calls = %v", calls)
+	}
+}
+
 func TestDeployerStopFailureMarksServiceError(t *testing.T) {
 	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
 		Name: "Preview", Mode: service.ModeQuick, OriginURL: "http://127.0.0.1:3000",
@@ -430,12 +587,15 @@ func waitForOperation(t *testing.T, operations *operation.Manager, id string) op
 	}
 }
 
-func TestDeployerResumeRejectsUnsupportedOperation(t *testing.T) {
+func TestDeployerResumeSupportsKnownOperations(t *testing.T) {
 	deployer := &Deployer{}
-	if task := deployer.Resume(operation.Operation{Kind: "delete", ServiceID: "svc_1"}); task != nil {
+	if task := deployer.Resume(operation.Operation{Kind: "unknown", ServiceID: "svc_1"}); task != nil {
 		t.Fatal("resume returned a task for an unsupported operation kind")
 	}
 	if task := deployer.Resume(operation.Operation{Kind: "stop", ServiceID: "svc_1"}); task == nil {
 		t.Fatal("resume did not return a task for a stop operation")
+	}
+	if task := deployer.Resume(operation.Operation{Kind: "delete", ServiceID: "svc_1"}); task == nil {
+		t.Fatal("resume did not return a task for a delete operation")
 	}
 }

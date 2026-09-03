@@ -122,13 +122,32 @@ type TunnelPort interface {
 	EnsurePrivateRoute(context.Context, PrivateRouteSpec) (RemoteRef, error)
 }
 
+// TunnelDestroyer removes only the remote resources explicitly owned by a
+// service. It is separate from TunnelPort so read/deploy fakes do not need to
+// implement destructive operations.
+type TunnelDestroyer interface {
+	DeleteTunnel(context.Context, string) error
+	DeletePrivateRoute(context.Context, string) error
+}
+
 type AccessPort interface {
 	EnsureApplication(context.Context, AccessApplicationSpec) (RemoteRef, error)
 	EnsurePolicy(context.Context, AccessPolicySpec) (RemoteRef, error)
 }
 
+// AccessDestroyer removes an Access policy and its parent application.
+type AccessDestroyer interface {
+	DeleteApplication(context.Context, string) error
+	DeletePolicy(context.Context, string, string) error
+}
+
 type DNSPort interface {
 	EnsureCNAME(context.Context, CNAMESpec) (RemoteRef, error)
+}
+
+// DNSDestroyer removes a DNS record by its stored Cloudflare record ID.
+type DNSDestroyer interface {
+	DeleteCNAME(context.Context, string) error
 }
 
 // ConnectorRuntime manages one cloudflared process per service identifier.

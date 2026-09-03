@@ -168,6 +168,14 @@ func (i *Integration) EnsureTunnel(ctx context.Context, spec provision.TunnelSpe
 	return client.EnsureTunnel(ctx, spec)
 }
 
+func (i *Integration) DeleteTunnel(ctx context.Context, id string) error {
+	client, err := i.current()
+	if err != nil {
+		return err
+	}
+	return client.DeleteTunnel(ctx, id)
+}
+
 func (i *Integration) ApplyWebRoute(ctx context.Context, spec provision.RouteSpec) error {
 	client, err := i.current()
 	if err != nil {
@@ -184,12 +192,28 @@ func (i *Integration) EnsurePrivateRoute(ctx context.Context, spec provision.Pri
 	return client.EnsurePrivateRoute(ctx, spec)
 }
 
+func (i *Integration) DeletePrivateRoute(ctx context.Context, id string) error {
+	client, err := i.current()
+	if err != nil {
+		return err
+	}
+	return client.DeletePrivateRoute(ctx, id)
+}
+
 func (i *Integration) EnsureApplication(ctx context.Context, spec provision.AccessApplicationSpec) (provision.RemoteRef, error) {
 	client, err := i.current()
 	if err != nil {
 		return provision.RemoteRef{}, err
 	}
 	return client.EnsureApplication(ctx, spec)
+}
+
+func (i *Integration) DeleteApplication(ctx context.Context, id string) error {
+	client, err := i.current()
+	if err != nil {
+		return err
+	}
+	return client.DeleteApplication(ctx, id)
 }
 
 func (i *Integration) EnsurePolicy(ctx context.Context, spec provision.AccessPolicySpec) (provision.RemoteRef, error) {
@@ -200,6 +224,14 @@ func (i *Integration) EnsurePolicy(ctx context.Context, spec provision.AccessPol
 	return client.EnsurePolicy(ctx, spec)
 }
 
+func (i *Integration) DeletePolicy(ctx context.Context, applicationID, policyID string) error {
+	client, err := i.current()
+	if err != nil {
+		return err
+	}
+	return client.DeletePolicy(ctx, applicationID, policyID)
+}
+
 func (i *Integration) EnsureCNAME(ctx context.Context, spec provision.CNAMESpec) (provision.RemoteRef, error) {
 	client, err := i.current()
 	if err != nil {
@@ -208,6 +240,17 @@ func (i *Integration) EnsureCNAME(ctx context.Context, spec provision.CNAMESpec)
 	return client.EnsureCNAME(ctx, spec)
 }
 
+func (i *Integration) DeleteCNAME(ctx context.Context, id string) error {
+	client, err := i.current()
+	if err != nil {
+		return err
+	}
+	return client.DeleteCNAME(ctx, id)
+}
+
 var _ provision.TunnelPort = (*Integration)(nil)
+var _ provision.TunnelDestroyer = (*Integration)(nil)
 var _ provision.AccessPort = (*Integration)(nil)
+var _ provision.AccessDestroyer = (*Integration)(nil)
 var _ provision.DNSPort = (*Integration)(nil)
+var _ provision.DNSDestroyer = (*Integration)(nil)

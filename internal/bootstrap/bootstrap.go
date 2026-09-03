@@ -80,7 +80,7 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 		}
 	}()
 	router, err := httpapi.NewRouter(httpapi.Dependencies{
-		Services: services, Operations: operations, Deployer: deployer, Stopper: deployer, Cloudflare: integration,
+		Services: services, Operations: operations, Deployer: deployer, Stopper: deployer, Deleter: deployer, Cloudflare: integration,
 		Connectors: connectors, AdminToken: adminToken, Logger: logger,
 		Readiness: db.PingContext, WebDir: cfg.WebDir,
 	})

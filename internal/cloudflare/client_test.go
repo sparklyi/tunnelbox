@@ -191,6 +191,56 @@ func TestClientPrivateRouteAndAccessApplication(t *testing.T) {
 	}
 }
 
+func TestClientDeletesOwnedResourcesAndTreatsMissingResourcesAsSuccess(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete && r.URL.Path == "/accounts/acct/cfd_tunnel/missing" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1003,"message":"not found"}]}`))
+			return
+		}
+		writeEnvelope(w, map[string]any{})
+	}))
+	defer server.Close()
+
+	client, err := New(Config{Token: "secret", AccountID: "acct", ZoneID: "zone", BaseURL: server.URL + "/"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	if err := client.DeleteCNAME(context.Background(), "dns_1"); err != nil {
+		t.Fatalf("delete dns: %v", err)
+	}
+	if err := client.DeletePolicy(context.Background(), "app_1", "policy_1"); err != nil {
+		t.Fatalf("delete policy: %v", err)
+	}
+	if err := client.DeleteApplication(context.Background(), "app_1"); err != nil {
+		t.Fatalf("delete application: %v", err)
+	}
+	if err := client.DeletePrivateRoute(context.Background(), "route_1"); err != nil {
+		t.Fatalf("delete private route: %v", err)
+	}
+	if err := client.DeleteTunnel(context.Background(), "tun_1"); err != nil {
+		t.Fatalf("delete tunnel: %v", err)
+	}
+	if err := client.DeleteTunnel(context.Background(), "missing"); err != nil {
+		t.Fatalf("delete missing tunnel: %v", err)
+	}
+
+	want := []string{
+		"DELETE /zones/zone/dns_records/dns_1",
+		"DELETE /accounts/acct/access/apps/app_1/policies/policy_1",
+		"DELETE /accounts/acct/access/apps/app_1",
+		"DELETE /accounts/acct/teamnet/routes/route_1",
+		"DELETE /accounts/acct/cfd_tunnel/tun_1",
+		"DELETE /accounts/acct/cfd_tunnel/missing",
+	}
+	if !strings.EqualFold(strings.Join(paths, "\n"), strings.Join(want, "\n")) {
+		t.Fatalf("delete paths = %v, want %v", paths, want)
+	}
+}
+
 func TestPrivateApplicationTarget(t *testing.T) {
 	tests := []struct {
 		name    string

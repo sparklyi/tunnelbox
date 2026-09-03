@@ -165,6 +165,13 @@ func (c *Client) EnsureTunnel(ctx context.Context, spec provision.TunnelSpec) (p
 	return provision.RemoteTunnel{ID: result.ID, Name: firstNonEmpty(result.Name, spec.Name), ConnectorToken: token}, nil
 }
 
+func (c *Client) DeleteTunnel(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("tunnel id is required")
+	}
+	return c.callDelete(ctx, c.accountPath("cfd_tunnel", id))
+}
+
 func (c *Client) ApplyWebRoute(ctx context.Context, spec provision.RouteSpec) error {
 	if spec.TunnelID == "" {
 		return errors.New("tunnel id is required")
@@ -231,6 +238,13 @@ func (c *Client) EnsurePrivateRoute(ctx context.Context, spec provision.PrivateR
 		return provision.RemoteRef{}, &Error{Code: "cloudflare_invalid_private_route_response"}
 	}
 	return provision.RemoteRef{ID: result.ID}, nil
+}
+
+func (c *Client) DeletePrivateRoute(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("private route id is required")
+	}
+	return c.callDelete(ctx, c.accountPath("teamnet", "routes", id))
 }
 
 func (c *Client) EnsureApplication(ctx context.Context, spec provision.AccessApplicationSpec) (provision.RemoteRef, error) {
@@ -302,6 +316,13 @@ func (c *Client) EnsureApplication(ctx context.Context, spec provision.AccessApp
 		return provision.RemoteRef{}, &Error{Code: "cloudflare_invalid_application_response"}
 	}
 	return provision.RemoteRef{ID: result.ID}, nil
+}
+
+func (c *Client) DeleteApplication(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("application id is required")
+	}
+	return c.callDelete(ctx, c.accountPath("access", "apps", id))
 }
 
 func privateApplicationTarget(domain string) (host, cidr, port string, err error) {
@@ -379,6 +400,13 @@ func (c *Client) EnsurePolicy(ctx context.Context, spec provision.AccessPolicySp
 	return provision.RemoteRef{ID: result.ID}, nil
 }
 
+func (c *Client) DeletePolicy(ctx context.Context, applicationID, policyID string) error {
+	if strings.TrimSpace(applicationID) == "" || strings.TrimSpace(policyID) == "" {
+		return errors.New("application id and policy id are required")
+	}
+	return c.callDelete(ctx, c.accountPath("access", "apps", applicationID, "policies", policyID))
+}
+
 func (c *Client) EnsureCNAME(ctx context.Context, spec provision.CNAMESpec) (provision.RemoteRef, error) {
 	if c.zoneID == "" {
 		return provision.RemoteRef{}, &Error{Code: "cloudflare_zone_required"}
@@ -412,6 +440,16 @@ func (c *Client) EnsureCNAME(ctx context.Context, spec provision.CNAMESpec) (pro
 		return provision.RemoteRef{}, &Error{Code: "cloudflare_invalid_dns_response"}
 	}
 	return provision.RemoteRef{ID: result.ID}, nil
+}
+
+func (c *Client) DeleteCNAME(ctx context.Context, id string) error {
+	if c.zoneID == "" {
+		return &Error{Code: "cloudflare_zone_required"}
+	}
+	if strings.TrimSpace(id) == "" {
+		return errors.New("dns record id is required")
+	}
+	return c.callDelete(ctx, c.zonePath("dns_records", id))
 }
 
 type apiEnvelope struct {
@@ -472,6 +510,25 @@ func (c *Client) call(ctx context.Context, method, path string, body any, result
 	}
 	if err := json.Unmarshal(envelope.Result, result); err != nil {
 		return &Error{Code: "cloudflare_invalid_response", Cause: err}
+	}
+	return nil
+}
+
+func (c *Client) callDelete(ctx context.Context, path string) error {
+	var envelope apiEnvelope
+	if err := c.api.Execute(ctx, http.MethodDelete, path, nil, &envelope); err != nil {
+		var apiErr *cloudflarego.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return nil
+		}
+		return normalizeError(err)
+	}
+	if !envelope.Success || len(envelope.Errors) > 0 {
+		code := "cloudflare_api_error"
+		if len(envelope.Errors) > 0 && envelope.Errors[0].Code != 0 {
+			code = fmt.Sprintf("cloudflare_%d", envelope.Errors[0].Code)
+		}
+		return &Error{Code: code}
 	}
 	return nil
 }

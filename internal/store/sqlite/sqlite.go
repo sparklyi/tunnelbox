@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 2
+const schemaVersion = 3
 
 func Open(ctx context.Context, path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -124,6 +124,70 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			`ALTER TABLE service ADD COLUMN private_route_id TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE service ADD COLUMN public_url TEXT NOT NULL DEFAULT ''`,
 			`PRAGMA user_version = 2`,
+		}
+		for _, statement := range statements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("migration statement: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration: %w", err)
+		}
+	}
+
+	if version < 3 {
+		var operationExists int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'operation'`).Scan(&operationExists); err != nil {
+			return fmt.Errorf("check operation table: %w", err)
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin migration: %w", err)
+		}
+		defer tx.Rollback()
+		var statements []string
+		if operationExists == 0 {
+			statements = []string{
+				`CREATE TABLE operation (
+					id TEXT PRIMARY KEY,
+					service_id TEXT NOT NULL,
+					kind TEXT NOT NULL,
+					status TEXT NOT NULL,
+					current_step TEXT NOT NULL DEFAULT '',
+					attempts INTEGER NOT NULL DEFAULT 0,
+					error_code TEXT NOT NULL DEFAULT '',
+					error_message TEXT NOT NULL DEFAULT '',
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL,
+					started_at TEXT,
+					finished_at TEXT
+				)`,
+				`CREATE INDEX IF NOT EXISTS idx_operation_service_status ON operation(service_id, status)`,
+				`PRAGMA user_version = 3`,
+			}
+		} else {
+			statements = []string{
+				`CREATE TABLE operation_new (
+				id TEXT PRIMARY KEY,
+				service_id TEXT NOT NULL,
+				kind TEXT NOT NULL,
+				status TEXT NOT NULL,
+				current_step TEXT NOT NULL DEFAULT '',
+				attempts INTEGER NOT NULL DEFAULT 0,
+				error_code TEXT NOT NULL DEFAULT '',
+				error_message TEXT NOT NULL DEFAULT '',
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				started_at TEXT,
+				finished_at TEXT
+			)`,
+				`INSERT INTO operation_new (id, service_id, kind, status, current_step, attempts, error_code, error_message, created_at, updated_at, started_at, finished_at)
+			 SELECT id, service_id, kind, status, current_step, attempts, error_code, error_message, created_at, updated_at, started_at, finished_at FROM operation`,
+				`DROP TABLE operation`,
+				`ALTER TABLE operation_new RENAME TO operation`,
+				`CREATE INDEX IF NOT EXISTS idx_operation_service_status ON operation(service_id, status)`,
+				`PRAGMA user_version = 3`,
+			}
 		}
 		for _, statement := range statements {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {

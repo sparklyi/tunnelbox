@@ -231,8 +231,21 @@ func updateServiceHandler(actions ServiceActions) gin.HandlerFunc {
 	}
 }
 
-func deleteServiceHandler(actions ServiceActions) gin.HandlerFunc {
+func deleteServiceHandler(actions ServiceActions, deleter ServiceDeleter) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if deleter != nil {
+			op, err := deleter.Delete(contextForOperation(c), c.Param("id"))
+			if err != nil {
+				writeDomainError(c, err)
+				return
+			}
+			if op.ID != "" {
+				c.JSON(http.StatusAccepted, makeOperationResponse(op))
+				return
+			}
+			c.Status(http.StatusNoContent)
+			return
+		}
 		if err := actions.Delete(c.Request.Context(), c.Param("id")); err != nil {
 			writeDomainError(c, err)
 			return
@@ -396,7 +409,9 @@ func statusForCode(code string) int {
 	case "origin_unreachable", "cloudflare_unavailable", "cloudflare_timeout", "connector_start_failed",
 		"connector_stop_failed", "quick_tunnel_start_failed", "quick_tunnel_url_unavailable", "private_route_failed",
 		"tunnel_unavailable", "tunnel_route_failed", "access_application_failed", "access_policy_failed",
-		"access_policy_attach_failed", "dns_failed", "connector_unhealthy":
+		"access_policy_attach_failed", "dns_failed", "connector_unhealthy", "dns_delete_failed",
+		"access_policy_delete_failed", "access_application_delete_failed", "private_route_delete_failed",
+		"tunnel_delete_failed":
 		return http.StatusBadGateway
 	default:
 		return http.StatusInternalServerError
@@ -435,6 +450,18 @@ func messageForCode(code string) string {
 		return "connector did not become healthy"
 	case "connector_stop_failed":
 		return "cloudflared could not be stopped"
+	case "dns_delete_failed":
+		return "DNS CNAME could not be deleted"
+	case "access_policy_delete_failed":
+		return "Access allow policy could not be deleted"
+	case "access_application_delete_failed":
+		return "Access application could not be deleted"
+	case "private_route_delete_failed":
+		return "private network route could not be deleted"
+	case "tunnel_delete_failed":
+		return "Cloudflare Tunnel could not be deleted"
+	case "service_delete_failed":
+		return "service record could not be deleted"
 	default:
 		return "request could not be completed"
 	}
