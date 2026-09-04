@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 )
 
 type Config struct {
@@ -12,7 +11,6 @@ type Config struct {
 	DatabasePath        string
 	WorkspaceID         string
 	WorkspaceName       string
-	AdminTokenFile      string
 	CloudflareTokenFile string
 	CloudflaredBinary   string
 	CloudflaredDataDir  string
@@ -25,7 +23,6 @@ func Load() (Config, error) {
 		DatabasePath:        valueOr("TUNNELBOX_DATABASE", "data/tunnelbox.db"),
 		WorkspaceID:         valueOr("TUNNELBOX_WORKSPACE_ID", "default"),
 		WorkspaceName:       valueOr("TUNNELBOX_WORKSPACE_NAME", "Default"),
-		AdminTokenFile:      strings.TrimSpace(os.Getenv("TUNNELBOX_ADMIN_TOKEN_FILE")),
 		CloudflareTokenFile: valueOr("TUNNELBOX_CLOUDFLARE_TOKEN_FILE", "data/cloudflare.token"),
 		CloudflaredBinary:   valueOr("TUNNELBOX_CLOUDFLARED_BINARY", "cloudflared"),
 		CloudflaredDataDir:  valueOr("TUNNELBOX_CLOUDFLARED_DATA_DIR", "data/cloudflared"),
@@ -42,9 +39,6 @@ func Load() (Config, error) {
 	}
 	if cfg.CloudflareTokenFile == "" || cfg.CloudflaredBinary == "" || cfg.CloudflaredDataDir == "" {
 		return Config{}, fmt.Errorf("cloudflare token file, cloudflared binary and data directory must not be empty")
-	}
-	if !isLoopbackAddress(cfg.ListenAddress) && cfg.AdminTokenFile == "" {
-		return Config{}, fmt.Errorf("TUNNELBOX_ADMIN_TOKEN_FILE is required for non-loopback listen address")
 	}
 	return cfg, nil
 }

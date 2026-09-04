@@ -45,12 +45,10 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	if err := store.EnsureWorkspace(ctx, workspaceID, cfg.WorkspaceName); err != nil {
 		return fmt.Errorf("ensure workspace: %w", err)
 	}
-	adminToken, err := auth.LoadToken(cfg.AdminTokenFile)
-	if err != nil {
-		return fmt.Errorf("load admin token: %w", err)
-	}
 	services := service.NewUseCase(store.Services(), workspaceID)
+	authentication := auth.NewManager(store)
 	operations := operation.NewManager(store.Operations())
+
 	integration, err := cloudflare.NewIntegration(ctx, store, workspaceID, cfg.CloudflareTokenFile, "", nil)
 	if err != nil {
 		return fmt.Errorf("build cloudflare integration: %w", err)
@@ -81,7 +79,7 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	}()
 	router, err := httpapi.NewRouter(httpapi.Dependencies{
 		Services: services, Operations: operations, Deployer: deployer, Stopper: deployer, Deleter: deployer, Cloudflare: integration,
-		Connectors: connectors, AdminToken: adminToken, Logger: logger,
+		Connectors: connectors, Auth: authentication, Logger: logger,
 		Readiness: db.PingContext, WebDir: cfg.WebDir,
 	})
 	if err != nil {

@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sparklyi/tunnelbox/internal/auth"
 )
 
 const requestIDKey = "request_id"
@@ -60,22 +60,28 @@ func errorMiddleware() gin.HandlerFunc {
 	}
 }
 
-func authMiddleware(expected string) gin.HandlerFunc {
-	expected = strings.TrimSpace(expected)
+func authMiddleware(manager *auth.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if expected == "" || isPublicPath(c.Request.URL.Path) {
+		if isPublicPath(c.Request.URL.Path) || strings.HasPrefix(c.Request.URL.Path, "/api/v1/auth/") {
 			c.Next()
 			return
 		}
-		value := c.GetHeader("Authorization")
-		const prefix = "Bearer "
-		if len(value) <= len(prefix) || !strings.EqualFold(value[:len(prefix)], prefix) {
-			writeError(c, http.StatusUnauthorized, "unauthorized", "bearer token is required")
+		if manager == nil {
+			writeError(c, http.StatusInternalServerError, "internal_error", "authentication is not configured")
 			return
 		}
-		token := strings.TrimSpace(value[len(prefix):])
-		if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
-			writeError(c, http.StatusUnauthorized, "unauthorized", "bearer token is invalid")
+		token, err := c.Cookie(auth.SessionCookie)
+		if err != nil {
+			writeError(c, http.StatusUnauthorized, "unauthorized", "login is required")
+			return
+		}
+		valid, err := manager.Authenticate(c.Request.Context(), token)
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "internal_error", "authentication failed")
+			return
+		}
+		if !valid {
+			writeError(c, http.StatusUnauthorized, "unauthorized", "login is required")
 			return
 		}
 		c.Next()

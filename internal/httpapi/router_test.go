@@ -13,10 +13,41 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sparklyi/tunnelbox/internal/auth"
 	"github.com/sparklyi/tunnelbox/internal/operation"
 	"github.com/sparklyi/tunnelbox/internal/provision"
 	"github.com/sparklyi/tunnelbox/internal/service"
+	"golang.org/x/crypto/bcrypt"
 )
+
+type testAuthRepository struct{ sessions map[string]time.Time }
+
+func (r *testAuthRepository) PasswordHash(context.Context) ([]byte, error) {
+	return bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+}
+func (r *testAuthRepository) SavePasswordHash(context.Context, []byte) error { return nil }
+func (r *testAuthRepository) CreateSession(_ context.Context, token string, expires time.Time) error {
+	r.sessions[token] = expires
+	return nil
+}
+func (r *testAuthRepository) SessionValid(_ context.Context, token string, now time.Time) (bool, error) {
+	expires, ok := r.sessions[token]
+	return ok && expires.After(now), nil
+}
+func (r *testAuthRepository) DeleteSession(_ context.Context, token string) error {
+	delete(r.sessions, token)
+	return nil
+}
+func testAuth(t *testing.T) *auth.Manager {
+	return auth.NewManager(&testAuthRepository{sessions: map[string]time.Time{}})
+}
+func addTestCookie(t *testing.T, req *http.Request, manager *auth.Manager) {
+	token, err := manager.Login(context.Background(), "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookie, Value: token})
+}
 
 type fakeServiceActions struct {
 	items []service.Service
@@ -91,7 +122,7 @@ func (fakeCloudflareIntegration) Zones(context.Context) ([]provision.Zone, error
 func TestRouterRequiresBearerTokenAndReturnsRequestID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router, err := NewRouter(Dependencies{
-		Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, AdminToken: "secret",
+		Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Auth: testAuth(t),
 	})
 	if err != nil {
 		t.Fatalf("new router: %v", err)
@@ -121,7 +152,7 @@ func TestRouterServesConsoleShellBeforeBearerAuthentication(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<html>console</html>"), 0o600); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
-	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, AdminToken: "secret", WebDir: webDir})
+	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Auth: testAuth(t), WebDir: webDir})
 	if err != nil {
 		t.Fatalf("new router: %v", err)
 	}
@@ -136,13 +167,14 @@ func TestRouterServesConsoleShellBeforeBearerAuthentication(t *testing.T) {
 func TestRouterCreatesServiceWithBearerToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	services := &fakeServiceActions{}
-	router, err := NewRouter(Dependencies{Services: services, Operations: fakeOperationReader{}, AdminToken: "secret"})
+	authentication := testAuth(t)
+	router, err := NewRouter(Dependencies{Services: services, Operations: fakeOperationReader{}, Auth: authentication})
 	if err != nil {
 		t.Fatalf("new router: %v", err)
 	}
 	body := `{"name":"Demo","hostname":"app.example.com","origin_url":"http://127.0.0.1:8080","allow_type":"email","allow_value":"user@example.com"}`
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/services", strings.NewReader(body))
-	request.Header.Set("Authorization", "Bearer secret")
+	addTestCookie(t, request, authentication)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -157,12 +189,13 @@ func TestRouterCreatesServiceWithBearerToken(t *testing.T) {
 func TestRouterStopsServiceWithBearerToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	stopper := &fakeServiceStopper{}
-	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Stopper: stopper, AdminToken: "secret"})
+	authentication := testAuth(t)
+	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Stopper: stopper, Auth: authentication})
 	if err != nil {
 		t.Fatalf("new router: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/services/svc_test/stop", nil)
-	request.Header.Set("Authorization", "Bearer secret")
+	addTestCookie(t, request, authentication)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
@@ -176,12 +209,13 @@ func TestRouterStopsServiceWithBearerToken(t *testing.T) {
 func TestRouterDeletesServiceWithBearerToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	deleter := &fakeServiceDeleter{}
-	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Deleter: deleter, AdminToken: "secret"})
+	authentication := testAuth(t)
+	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Deleter: deleter, Auth: authentication})
 	if err != nil {
 		t.Fatalf("new router: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodDelete, "/api/v1/services/svc_test", nil)
-	request.Header.Set("Authorization", "Bearer secret")
+	addTestCookie(t, request, authentication)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
@@ -194,13 +228,14 @@ func TestRouterDeletesServiceWithBearerToken(t *testing.T) {
 
 func TestRouterCloudflareIntegrationEndpointsDoNotReturnToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	authentication := testAuth(t)
 	router, err := NewRouter(Dependencies{Services: &fakeServiceActions{}, Operations: fakeOperationReader{},
-		Cloudflare: fakeCloudflareIntegration{}, AdminToken: "secret"})
+		Cloudflare: fakeCloudflareIntegration{}, Auth: authentication})
 	if err != nil {
 		t.Fatalf("new router: %v", err)
 	}
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/integrations/cloudflare", strings.NewReader(`{"account_id":"acct","zone_id":"zone","token":"super-secret"}`))
-	request.Header.Set("Authorization", "Bearer secret")
+	addTestCookie(t, request, authentication)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -212,7 +247,7 @@ func TestRouterCloudflareIntegrationEndpointsDoNotReturnToken(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/zones", nil)
-	request.Header.Set("Authorization", "Bearer secret")
+	addTestCookie(t, request, authentication)
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "example.com") {

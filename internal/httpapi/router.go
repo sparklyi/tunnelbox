@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sparklyi/tunnelbox/internal/auth"
 	"github.com/sparklyi/tunnelbox/internal/operation"
 	"github.com/sparklyi/tunnelbox/internal/provision"
 	"github.com/sparklyi/tunnelbox/internal/service"
@@ -63,7 +64,8 @@ type Dependencies struct {
 	Deleter    ServiceDeleter
 	Cloudflare CloudflareIntegration
 	Connectors ConnectorLister
-	AdminToken string
+	Auth       *auth.Manager
+	AdminToken string // retained only for source compatibility; bearer authentication is not accepted
 	Logger     *slog.Logger
 	Readiness  func(context.Context) error
 	WebDir     string
@@ -82,7 +84,7 @@ func NewRouter(deps Dependencies) (*gin.Engine, error) {
 
 	router := gin.New()
 	router.Use(requestIDMiddleware(), recoveryMiddleware(deps.Logger), loggingMiddleware(deps.Logger), errorMiddleware())
-	router.Use(authMiddleware(deps.AdminToken))
+	router.Use(authMiddleware(deps.Auth))
 
 	router.GET("/healthz", healthHandler)
 	router.GET("/readyz", func(c *gin.Context) {
@@ -96,6 +98,10 @@ func NewRouter(deps Dependencies) (*gin.Engine, error) {
 	})
 
 	api := router.Group("/api/v1")
+	api.GET("/auth/status", authStatusHandler(deps.Auth))
+	api.POST("/auth/setup", authSetupHandler(deps.Auth))
+	api.POST("/auth/login", authLoginHandler(deps.Auth))
+	api.POST("/auth/logout", authLogoutHandler(deps.Auth))
 	api.PUT("/integrations/cloudflare", configureCloudflareHandler(deps.Cloudflare))
 	api.GET("/integrations/cloudflare/status", cloudflareStatusHandler(deps.Cloudflare))
 	api.GET("/zones", listZonesHandler(deps.Cloudflare))

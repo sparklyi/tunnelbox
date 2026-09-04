@@ -9,10 +9,91 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sparklyi/tunnelbox/internal/auth"
 	"github.com/sparklyi/tunnelbox/internal/operation"
 	"github.com/sparklyi/tunnelbox/internal/provision"
 	"github.com/sparklyi/tunnelbox/internal/service"
 )
+
+type authRequest struct {
+	Password string `json:"password"`
+}
+
+func authStatusHandler(manager *auth.Manager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if manager == nil {
+			writeError(c, http.StatusInternalServerError, "internal_error", "authentication is not configured")
+			return
+		}
+		initialized, err := manager.Initialized(c.Request.Context())
+		if err != nil {
+			writeError(c, http.StatusInternalServerError, "internal_error", "authentication status unavailable")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"initialized": initialized})
+	}
+}
+
+func authSetupHandler(manager *auth.Manager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var request authRequest
+		if !decodeJSON(c, &request) {
+			return
+		}
+		token, err := manager.Setup(c.Request.Context(), request.Password)
+		if err != nil {
+			writeAuthError(c, err)
+			return
+		}
+		setSessionCookie(c, token)
+		c.Status(http.StatusNoContent)
+	}
+}
+
+func authLoginHandler(manager *auth.Manager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var request authRequest
+		if !decodeJSON(c, &request) {
+			return
+		}
+		token, err := manager.Login(c.Request.Context(), request.Password)
+		if err != nil {
+			writeAuthError(c, err)
+			return
+		}
+		setSessionCookie(c, token)
+		c.Status(http.StatusNoContent)
+	}
+}
+
+func authLogoutHandler(manager *auth.Manager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token, _ := c.Cookie(auth.SessionCookie)
+		if err := manager.Logout(c.Request.Context(), token); err != nil {
+			writeError(c, http.StatusInternalServerError, "internal_error", "logout failed")
+			return
+		}
+		http.SetCookie(c.Writer, &http.Cookie{Name: auth.SessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		c.Status(http.StatusNoContent)
+	}
+}
+
+func setSessionCookie(c *gin.Context, token string) {
+	http.SetCookie(c.Writer, &http.Cookie{Name: auth.SessionCookie, Value: token, Path: "/", MaxAge: 30 * 24 * 60 * 60, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+}
+
+func writeAuthError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, auth.ErrInvalidPassword):
+		writeError(c, http.StatusBadRequest, "invalid_password", "password must be 8 to 256 characters")
+	case errors.Is(err, auth.ErrAlreadySetup):
+		writeError(c, http.StatusConflict, "already_initialized", "administrator is already configured")
+	case errors.Is(err, auth.ErrUnauthenticated):
+		writeError(c, http.StatusUnauthorized, "unauthorized", "password is invalid")
+	default:
+		writeError(c, http.StatusInternalServerError, "internal_error", "authentication failed")
+	}
+}
 
 type createServiceRequest struct {
 	Mode       service.Mode      `json:"mode"`

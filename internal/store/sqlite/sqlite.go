@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 3
+const schemaVersion = 4
 
 func Open(ctx context.Context, path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -188,6 +188,32 @@ func migrate(ctx context.Context, db *sql.DB) error {
 				`CREATE INDEX IF NOT EXISTS idx_operation_service_status ON operation(service_id, status)`,
 				`PRAGMA user_version = 3`,
 			}
+		}
+		for _, statement := range statements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("migration statement: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration: %w", err)
+		}
+	}
+
+	if version < 4 {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin migration: %w", err)
+		}
+		defer tx.Rollback()
+		statements := []string{
+			`ALTER TABLE workspace ADD COLUMN admin_password_hash TEXT NOT NULL DEFAULT ''`,
+			`CREATE TABLE auth_session (
+				token_hash TEXT PRIMARY KEY,
+				expires_at TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			)`,
+			`CREATE INDEX idx_auth_session_expires_at ON auth_session(expires_at)`,
+			`PRAGMA user_version = 4`,
 		}
 		for _, statement := range statements {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
