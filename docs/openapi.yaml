@@ -5,8 +5,7 @@ info:
   description: Local control plane for quickly exposing internal HTTP/HTTPS origins. Quick needs no Cloudflare account or public domain; Private uses WARP and Access without a domain; Public uses a zone hostname, DNS, and Access.
 servers:
   - url: http://127.0.0.1:8080
-security:
-  - bearerAuth: []
+security: []
 paths:
   /healthz:
     get:
@@ -20,6 +19,51 @@ paths:
       responses:
         '200': { description: Storage is ready. }
         '503': { $ref: '#/components/responses/Error' }
+  /api/v1/auth/status:
+    get:
+      security: []
+      summary: Check whether an administrator password has been configured
+      responses:
+        '200':
+          description: Authentication state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [initialized]
+                properties:
+                  initialized: { type: boolean }
+  /api/v1/auth/setup:
+    post:
+      security: []
+      summary: Create the administrator password on first use
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRequest' }
+      responses:
+        '204': { description: Password created and session cookie set. }
+        '400': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /api/v1/auth/login:
+    post:
+      security: []
+      summary: Log in with the administrator password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthRequest' }
+      responses:
+        '204': { description: Session cookie set. }
+        '401': { $ref: '#/components/responses/Error' }
+  /api/v1/auth/logout:
+    post:
+      security: []
+      summary: Log out and invalidate the current session
+      responses:
+        '204': { description: Session cookie cleared. }
   /api/v1/integrations/cloudflare:
     put:
       summary: Validate and save Cloudflare credentials
@@ -185,9 +229,11 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
 components:
   securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: tunnelbox_session
+
   parameters:
     ServiceID:
       name: id
@@ -201,7 +247,12 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
   schemas:
-    CloudflareConfigureRequest:
+    AuthRequest:
+      type: object
+      required: [password]
+      properties:
+        password: { type: string, format: password, writeOnly: true, minLength: 8, maxLength: 256 }
+
       type: object
       required: [account_id, token]
       properties:
