@@ -122,37 +122,17 @@ class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, token: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  if (token.trim()) {
-    headers.set("Authorization", `Bearer ${token.trim()}`);
-  }
-  const response = await fetch(path, { ...init, headers });
+  const response = await fetch(path, { ...init, headers, credentials: "include" });
   const payload = (await response.json().catch(() => null)) as { message?: string; code?: string } | null;
   if (!response.ok) {
     throw new ApiError(response.status, payload?.message || "请求未完成", payload?.code);
   }
   return payload as T;
-}
-
-function getStoredToken() {
-  try {
-    return sessionStorage.getItem("tunnelbox.adminToken") || "";
-  } catch {
-    return "";
-  }
-}
-
-function storeToken(token: string) {
-  try {
-    if (token.trim()) sessionStorage.setItem("tunnelbox.adminToken", token.trim());
-    else sessionStorage.removeItem("tunnelbox.adminToken");
-  } catch {
-    // Session storage can be unavailable in locked-down browsers.
-  }
 }
 
 const onboardingStorageKey = "tunnelbox.onboarding.dismissed";
@@ -232,10 +212,40 @@ function Spinner({ size = 16 }: { size?: number }) {
   );
 }
 
+function AuthScreen({ state, onAuthenticated, error }: { state: "loading" | "setup" | "login" | "authenticated"; onAuthenticated: () => void; error: string }) {
+  const setup = state === "setup";
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [message, setMessage] = useState(error);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setMessage("");
+    if (setup && password !== confirmation) { setMessage("两次输入的密码不一致"); return; }
+    setSubmitting(true);
+    try {
+      await request<void>(setup ? "/api/v1/auth/setup" : "/api/v1/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+      onAuthenticated();
+    } catch (caught) {
+      setMessage(caught instanceof Error ? caught.message : "登录失败");
+    } finally { setSubmitting(false); }
+  }
+
+  if (state === "loading") return <div className="auth-shell"><Spinner size={24} /></div>;
+  return <div className="auth-shell"><motion.form className="auth-card" onSubmit={submit} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+    <div className="brand-mark"><TerminalSquare size={18} /></div><p className="eyebrow">TunnelBox 控制面</p>
+    <h1>{setup ? "创建管理员密码" : "欢迎回来"}</h1>
+    <p className="auth-intro">{setup ? "首次使用请设置密码，之后可直接登录控制面。" : "请输入管理员密码继续。"}</p>
+    <label>管理员密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={256} autoComplete={setup ? "new-password" : "current-password"} autoFocus required /></label>
+    {setup && <label>确认密码<input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={8} maxLength={256} autoComplete="new-password" required /></label>}
+    {(message || error) && <p className="form-error"><CircleAlert size={16} />{message || error}</p>}
+    <button type="submit" className="button button-primary auth-submit" disabled={submitting}>{submitting ? <Spinner /> : <ArrowRight size={16} />}{submitting ? "请稍候" : setup ? "创建并登录" : "登录"}</button>
+  </motion.form></div>;
+}
+
 function App() {
-  const [adminToken, setAdminToken] = useState(getStoredToken);
-  const [tokenDraft, setTokenDraft] = useState(adminToken);
-  const adminTokenRef = useRef(adminToken);
+  const [authState, setAuthState] = useState<"loading" | "setup" | "login" | "authenticated">("loading");
   const loadGenerationRef = useRef(0);
   const [integration, setIntegration] = useState<IntegrationStatus>(emptyIntegration);
   const [zones, setZones] = useState<Zone[]>([]);
@@ -244,8 +254,6 @@ function App() {
   const [operation, setOperation] = useState<Operation | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [authRequired, setAuthRequired] = useState(false);
-  const [tokenState, setTokenState] = useState<TokenState>(adminToken ? "checking" : "idle");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [integrationOpen, setIntegrationOpen] = useState(false);
@@ -254,8 +262,7 @@ function App() {
   const [guideOpen, setGuideOpen] = useState(() => !hasDismissedOnboarding());
 
   const loadData = useCallback(
-    async (showRefresh = false, tokenOverride?: string): Promise<boolean> => {
-      const requestToken = tokenOverride ?? adminTokenRef.current;
+    async (showRefresh = false): Promise<boolean> => {
       const generation = ++loadGenerationRef.current;
       const isCurrentLoad = () => generation === loadGenerationRef.current;
       if (showRefresh) setRefreshing(true);
@@ -263,32 +270,26 @@ function App() {
       if (isCurrentLoad()) setError("");
       try {
         const [status, servicePayload, connectorPayload] = await Promise.all([
-          request<IntegrationStatus>("/api/v1/integrations/cloudflare/status", requestToken),
-          request<{ services: Service[] }>("/api/v1/services", requestToken),
-          request<{ connectors: Connector[] }>("/api/v1/connectors", requestToken),
+          request<IntegrationStatus>("/api/v1/integrations/cloudflare/status"),
+          request<{ services: Service[] }>("/api/v1/services"),
+          request<{ connectors: Connector[] }>("/api/v1/connectors"),
         ]);
         if (!isCurrentLoad()) return false;
         setIntegration(status);
         setServices(servicePayload.services || []);
         setConnectors(connectorPayload.connectors || []);
         if (status.configured && status.zone_id) {
-          const zonePayload = await request<{ zones: Zone[] }>("/api/v1/zones", requestToken);
+          const zonePayload = await request<{ zones: Zone[] }>("/api/v1/zones");
           if (!isCurrentLoad()) return false;
           setZones(zonePayload.zones || []);
         } else {
           setZones([]);
         }
-        setAuthRequired(false);
-        if (requestToken && requestToken === adminTokenRef.current) setTokenState("connected");
         return true;
       } catch (caught) {
         if (!isCurrentLoad()) return false;
         if (caught instanceof ApiError && caught.status === 401) {
-          if (requestToken === adminTokenRef.current) {
-            setAuthRequired(true);
-            setError("需要管理员令牌才能访问控制面");
-            if (requestToken) setTokenState("invalid");
-          }
+          setAuthState("login");
         } else {
           setError(caught instanceof Error ? caught.message : "无法加载控制面数据");
         }
@@ -304,15 +305,21 @@ function App() {
   );
 
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    void request<{ initialized: boolean }>("/api/v1/auth/status")
+      .then((status) => setAuthState(status.initialized ? "login" : "setup"))
+      .catch(() => setError("无法读取登录状态"));
+  }, []);
+
+  useEffect(() => {
+    if (authState === "authenticated") void loadData();
+  }, [authState, loadData]);
 
   useEffect(() => {
     if (!operation || ["succeeded", "failed", "unknown"].includes(operation.status)) return;
     let stopped = false;
     const timer = window.setInterval(async () => {
       try {
-        const next = await request<Operation>(`/api/v1/operations/${operation.operation_id}`, adminToken);
+        const next = await request<Operation>(`/api/v1/operations/${operation.operation_id}`);
         if (!stopped) {
           setOperation(next);
           if (["succeeded", "failed", "unknown"].includes(next.status)) {
@@ -327,7 +334,7 @@ function App() {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [adminToken, loadData, operation]);
+  }, [loadData, operation]);
 
   const activeConnectors = useMemo(() => connectors.filter((item) => item.running).length, [connectors]);
 
@@ -335,7 +342,7 @@ function App() {
     setError("");
     setNotice("");
     try {
-      const next = await request<Operation>(`/api/v1/services/${item.id}/deploy`, adminToken, { method: "POST" });
+      const next = await request<Operation>(`/api/v1/services/${item.id}/deploy`, { method: "POST" });
       setOperation(next);
       setNotice(`已开始部署 ${item.name}`);
       await loadData(true);
@@ -348,7 +355,7 @@ function App() {
     setError("");
     setNotice("");
     try {
-      const next = await request<Operation>(`/api/v1/services/${item.id}/stop`, adminToken, { method: "POST" });
+      const next = await request<Operation>(`/api/v1/services/${item.id}/stop`, { method: "POST" });
       setOperation(next);
       setNotice(`已开始停止 ${item.name}`);
       await loadData(true);
@@ -362,7 +369,7 @@ function App() {
     setError("");
     setNotice("");
     try {
-      const next = await request<Operation | null>(`/api/v1/services/${item.id}`, adminToken, { method: "DELETE" });
+      const next = await request<Operation | null>(`/api/v1/services/${item.id}`, { method: "DELETE" });
       if (next?.operation_id) {
         setOperation(next);
         setNotice(`已开始删除 ${item.name}`);
@@ -376,38 +383,6 @@ function App() {
     }
   }
 
-  async function submitToken(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const next = tokenDraft.trim();
-    setError("");
-    setNotice("");
-    if (!next) {
-      adminTokenRef.current = "";
-      setAdminToken("");
-      storeToken("");
-      setAuthRequired(true);
-      setTokenState("invalid");
-      setError("请输入管理员令牌");
-      return;
-    }
-
-    setTokenState("checking");
-    try {
-      await request<IntegrationStatus>("/api/v1/integrations/cloudflare/status", next);
-    } catch (caught) {
-      setTokenState("invalid");
-      setError(caught instanceof ApiError && caught.status === 401 ? "管理员令牌无效，请检查后重试" : caught instanceof Error ? caught.message : "令牌验证失败");
-      return;
-    }
-
-    adminTokenRef.current = next;
-    setAdminToken(next);
-    storeToken(next);
-    setAuthRequired(false);
-    setTokenState("connected");
-    setNotice("管理员令牌已验证");
-    await loadData(true, next);
-  }
 
   function closeGuide() {
     rememberOnboardingDismissed();
@@ -422,6 +397,10 @@ function App() {
   function startConfiguration() {
     closeGuide();
     setIntegrationOpen(true);
+  }
+
+  if (authState !== "authenticated") {
+    return <AuthScreen state={authState} onAuthenticated={() => setAuthState("authenticated")} error={error} />;
   }
 
   return (
@@ -461,27 +440,7 @@ function App() {
             <button type="button" className="button button-secondary guide-trigger" onClick={() => setGuideOpen(true)} title="打开使用指南">
               <CircleHelp size={16} />使用指南
             </button>
-            <form className="token-form" onSubmit={submitToken}>
-              <label className="token-field">
-                <LockKeyhole size={14} aria-hidden="true" />
-                <span className="sr-only">管理员令牌</span>
-                <input
-                  type="password"
-                  value={tokenDraft}
-                  onChange={(event) => { setTokenDraft(event.target.value); setTokenState("idle"); setError(""); }}
-                  placeholder="管理员令牌"
-                  autoComplete="off"
-                  aria-invalid={tokenState === "invalid"}
-                  disabled={tokenState === "checking"}
-                />
-              </label>
-              <button type="submit" className="button button-primary token-submit" disabled={tokenState === "checking"}>
-                {tokenState === "checking" ? <Spinner size={15} /> : tokenState === "connected" ? <Check size={15} /> : <ArrowRight size={15} />}
-                {tokenState === "checking" ? "验证中" : tokenState === "connected" ? "已连接" : "连接"}
-              </button>
-              {tokenState === "connected" && <span className="token-feedback success" role="status"><Check size={13} />令牌有效</span>}
-              {tokenState === "invalid" && <span className="token-feedback error" role="alert"><CircleAlert size={13} />令牌无效</span>}
-            </form>
+            <button type="button" className="button button-secondary" onClick={async () => { await request<void>("/api/v1/auth/logout", { method: "POST" }); setAuthState("login"); }}><LockKeyhole size={15} />退出登录</button>
             <button className="icon-button" type="button" onClick={() => void loadData(true)} title="刷新数据" aria-label="刷新数据">
               {refreshing ? <Spinner size={17} /> : <RefreshCw size={17} />}
             </button>
@@ -493,7 +452,6 @@ function App() {
             <motion.div className="banner banner-error" role="alert" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>
               <CircleAlert size={17} />
               <span>{error}</span>
-              {authRequired && <button type="button" className="banner-action" onClick={() => document.querySelector<HTMLInputElement>(".token-field input")?.focus()}>输入令牌</button>}
               <button type="button" className="banner-close" onClick={() => setError("")} aria-label="关闭提示" title="关闭提示"><X size={16} /></button>
             </motion.div>
           )}
@@ -602,8 +560,8 @@ function App() {
 
       <AnimatePresence>
         {guideOpen && <GuideDialog onClose={closeGuide} onQuick={startQuick} onConfigure={startConfiguration} />}
-        {integrationOpen && <IntegrationDialog initial={integration} zones={zones} token={adminToken} onClose={() => setIntegrationOpen(false)} onSaved={(next) => { setIntegration(next); setIntegrationOpen(false); void loadData(true); }} />}
-        {editor && <ServiceDialog key={editor === "new" ? "new" : editor.id} value={editor === "new" ? null : editor} token={adminToken} onClose={() => setEditor(null)} onSaved={(saved) => { setEditor(null); setServices((current) => editor === "new" ? [...current, saved] : current.map((item) => item.id === saved.id ? saved : item)); setNotice(editor === "new" ? "服务已创建" : "服务已更新"); }} />}
+        {integrationOpen && <IntegrationDialog initial={integration} zones={zones} onClose={() => setIntegrationOpen(false)} onSaved={(next) => { setIntegration(next); setIntegrationOpen(false); void loadData(true); }} />}
+        {editor && <ServiceDialog key={editor === "new" ? "new" : editor.id} value={editor === "new" ? null : editor} onClose={() => setEditor(null)} onSaved={(saved) => { setEditor(null); setServices((current) => editor === "new" ? [...current, saved] : current.map((item) => item.id === saved.id ? saved : item)); setNotice(editor === "new" ? "服务已创建" : "服务已更新"); }} />}
         {deleteTarget && <DeleteDialog value={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => void remove(deleteTarget)} />}
       </AnimatePresence>
       </div>
@@ -698,7 +656,7 @@ function GuideDialog({ onClose, onQuick, onConfigure }: { onClose: () => void; o
   );
 }
 
-function IntegrationDialog({ initial, zones, token, onClose, onSaved }: { initial: IntegrationStatus; zones: Zone[]; token: string; onClose: () => void; onSaved: (status: IntegrationStatus) => void }) {
+function IntegrationDialog({ initial, zones, onClose, onSaved }: { initial: IntegrationStatus; zones: Zone[]; onClose: () => void; onSaved: (status: IntegrationStatus) => void }) {
   const [accountID, setAccountID] = useState(initial.account_id || "");
   const [zoneID, setZoneID] = useState(initial.zone_id || "");
   const [secret, setSecret] = useState("");
@@ -710,7 +668,7 @@ function IntegrationDialog({ initial, zones, token, onClose, onSaved }: { initia
     setSaving(true);
     setError("");
     try {
-      const status = await request<IntegrationStatus>("/api/v1/integrations/cloudflare", token, { method: "PUT", body: JSON.stringify({ account_id: accountID, zone_id: zoneID, token: secret }) });
+      const status = await request<IntegrationStatus>("/api/v1/integrations/cloudflare", { method: "PUT", body: JSON.stringify({ account_id: accountID, zone_id: zoneID, token: secret }) });
       setSecret("");
       onSaved(status);
     } catch (caught) {
@@ -756,7 +714,7 @@ function DeleteDialog({ value, onClose, onConfirm }: { value: Service; onClose: 
   );
 }
 
-function ServiceDialog({ value, token, onClose, onSaved }: { value: Service | null; token: string; onClose: () => void; onSaved: (service: Service) => void }) {
+function ServiceDialog({ value, onClose, onSaved }: { value: Service | null; onClose: () => void; onSaved: (service: Service) => void }) {
   const [form, setForm] = useState<ServiceForm>(() => {
     if (!value) return { ...emptyServiceForm };
     const mode = serviceMode(value);
@@ -790,7 +748,7 @@ function ServiceDialog({ value, token, onClose, onSaved }: { value: Service | nu
     setError("");
     try {
       const payload = JSON.stringify(form);
-      const saved = await request<Service>(value ? `/api/v1/services/${value.id}` : "/api/v1/services", token, { method: value ? "PATCH" : "POST", body: payload });
+      const saved = await request<Service>(value ? `/api/v1/services/${value.id}` : "/api/v1/services", { method: value ? "PATCH" : "POST", body: payload });
       onSaved(saved);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "服务保存失败");

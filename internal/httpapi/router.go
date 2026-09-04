@@ -65,7 +65,6 @@ type Dependencies struct {
 	Cloudflare CloudflareIntegration
 	Connectors ConnectorLister
 	Auth       *auth.Manager
-	AdminToken string // retained only for source compatibility; bearer authentication is not accepted
 	Logger     *slog.Logger
 	Readiness  func(context.Context) error
 	WebDir     string
