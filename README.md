@@ -38,12 +38,12 @@ unmanaged remote resources are out of scope.
 
 ```sh
 docker compose -f deploy/docker-compose.yml up --build -d
-docker compose -f deploy/docker-compose.yml exec tunnelbox cat /app/data/admin.token
 ```
 
-Open <http://127.0.0.1:8080> and paste the printed admin token into the console. The
-example exposes the control plane on loopback, persists SQLite, Connector state, and
-Secrets in the `tunnelbox-data` volume, and includes `cloudflared` in the image.
+Open <http://127.0.0.1:8080> and create an administrator password on first use. The
+console keeps a secure, persistent session cookie after login. The example exposes the
+control plane on loopback, persists SQLite, Connector state, and Secrets in the
+`tunnelbox-data` volume, and includes `cloudflared` in the image.
 
 ### From source
 
@@ -55,8 +55,10 @@ cd ..
 go run ./cmd/tunnelbox
 ```
 
-Open <http://127.0.0.1:8080>. A loopback bind does not require an admin token. Any LAN
-or public bind requires `TUNNELBOX_ADMIN_TOKEN_FILE` pointing to a `0600` file.
+Open <http://127.0.0.1:8080> and create an administrator password on first use. Subsequent
+visits use a secure, persistent session cookie. For a LAN or public bind, protect the
+endpoint with a reverse proxy or network policy; the application itself uses the same
+password login.
 
 ## First deployment
 
@@ -112,7 +114,6 @@ All settings are environment variables; the defaults are suitable for a local ch
 | --- | --- | --- |
 | `TUNNELBOX_LISTEN` | `127.0.0.1:8080` | HTTP bind address |
 | `TUNNELBOX_DATABASE` | `data/tunnelbox.db` | SQLite file |
-| `TUNNELBOX_ADMIN_TOKEN_FILE` | empty | Admin token file; required for non-loopback binds |
 | `TUNNELBOX_CLOUDFLARE_TOKEN_FILE` | `data/cloudflare.token` | Cloudflare API Token file |
 | `TUNNELBOX_CLOUDFLARED_BINARY` | `cloudflared` | Connector executable |
 | `TUNNELBOX_CLOUDFLARED_DATA_DIR` | `data/cloudflared` | Connector state directory |
@@ -124,8 +125,9 @@ Workspace (`default` and `Default`).
 ## API and development
 
 See [`docs/openapi.yaml`](docs/openapi.yaml) for the complete API contract. Deployment
-returns `202 Accepted`; poll `/api/v1/operations/:id` for progress. If admin
-authentication is enabled, send `Authorization: Bearer <admin-token>`.
+returns `202 Accepted`; poll `/api/v1/operations/:id` for progress. Authenticate by first
+calling `/api/v1/auth/setup` (first run) or `/api/v1/auth/login`; the server sets an
+HttpOnly session cookie.
 
 ```sh
 curl -X POST http://127.0.0.1:8080/api/v1/services \

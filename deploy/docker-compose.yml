@@ -11,20 +11,11 @@ services:
       GIN_MODE: release
       TUNNELBOX_DATABASE: /app/data/tunnelbox.db
       TUNNELBOX_WEB_DIR: /app/web/dist
-      TUNNELBOX_ADMIN_TOKEN_FILE: /app/data/admin.token
       TUNNELBOX_CLOUDFLARE_TOKEN_FILE: /app/data/cloudflare.token
       TUNNELBOX_CLOUDFLARED_BINARY: /usr/local/bin/cloudflared
       TUNNELBOX_CLOUDFLARED_DATA_DIR: /app/data/cloudflared
     volumes:
       - tunnelbox-data:/app/data
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >-
-        if [ ! -s "$$TUNNELBOX_ADMIN_TOKEN_FILE" ]; then
-          umask 077;
-          head -c 32 /dev/urandom | base64 | tr -d '\n' > "$$TUNNELBOX_ADMIN_TOKEN_FILE";
-        fi;
-        exec /usr/local/bin/tunnelbox
     healthcheck:
       test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8080/healthz"]
       interval: 10s

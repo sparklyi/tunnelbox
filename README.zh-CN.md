@@ -36,12 +36,11 @@ Tunnel 发布出去。它以受控方式运行 `cloudflared`，创建所需的 C
 
 ```sh
 docker compose -f deploy/docker-compose.yml up --build -d
-docker compose -f deploy/docker-compose.yml exec tunnelbox cat /app/data/admin.token
 ```
 
-打开 <http://127.0.0.1:8080>，将输出的管理员令牌粘贴到页面中。示例 Compose 把控制面
-映射到本机，并把 SQLite、Connector 状态和 Secret 保存在 `tunnelbox-data` 卷中；
-镜像已经包含 `cloudflared`。
+打开 <http://127.0.0.1:8080>，首次使用时直接创建管理员密码。登录后控制台会使用安全的
+持久化会话 Cookie；用户不需要查找或复制任何令牌。示例 Compose 把控制面映射到本机，并把
+SQLite、Connector 状态和 Secret 保存在 `tunnelbox-data` 卷中；镜像已经包含 `cloudflared`。
 
 ### 从源码运行
 
@@ -53,8 +52,8 @@ cd ..
 go run ./cmd/tunnelbox
 ```
 
-打开 <http://127.0.0.1:8080>。默认回环监听不要求控制面管理员令牌；监听局域网或公网
-地址时，必须设置 `TUNNELBOX_ADMIN_TOKEN_FILE`，且文件权限应为 `0600`。
+打开 <http://127.0.0.1:8080>，首次使用时创建管理员密码。之后访问会自动使用安全的持久化会话
+Cookie。局域网或公网监听时，请额外使用反向代理或网络策略限制访问范围；应用本身统一使用密码登录。
 
 ## 第一次部署
 
@@ -109,7 +108,6 @@ Global API Key。TunnelBox 不把 Token 写入 SQLite、日志或 API 响应。
 | --- | --- | --- |
 | `TUNNELBOX_LISTEN` | `127.0.0.1:8080` | HTTP 监听地址 |
 | `TUNNELBOX_DATABASE` | `data/tunnelbox.db` | SQLite 文件 |
-| `TUNNELBOX_ADMIN_TOKEN_FILE` | 空 | 非回环监听时必填的管理员令牌文件 |
 | `TUNNELBOX_CLOUDFLARE_TOKEN_FILE` | `data/cloudflare.token` | Cloudflare Token 文件 |
 | `TUNNELBOX_CLOUDFLARED_BINARY` | `cloudflared` | Connector 可执行文件 |
 | `TUNNELBOX_CLOUDFLARED_DATA_DIR` | `data/cloudflared` | Connector 状态目录 |
@@ -120,9 +118,9 @@ Global API Key。TunnelBox 不把 Token 写入 SQLite、日志或 API 响应。
 
 ## API 和开发
 
-完整 API 契约见 [`docs/openapi.yaml`](docs/openapi.yaml)。部署接口返回 `202`，客户端
-通过 `/api/v1/operations/:id` 轮询进度。如果配置了管理员认证，在请求中加入
-`Authorization: Bearer <admin-token>`。
+完整 API 契约见 [`docs/openapi.yaml`](docs/openapi.yaml)。部署接口返回 `202`，客户端通过
+`/api/v1/operations/:id` 轮询进度。首次使用调用 `/api/v1/auth/setup` 创建密码，之后调用
+`/api/v1/auth/login` 登录；服务端会设置 HttpOnly 会话 Cookie。
 
 ```sh
 # Quick：不需要域名或 Cloudflare 配置
