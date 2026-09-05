@@ -62,7 +62,7 @@ func errorMiddleware() gin.HandlerFunc {
 
 func authMiddleware(manager *auth.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if isPublicPath(c.Request.URL.Path) || strings.HasPrefix(c.Request.URL.Path, "/api/v1/auth/") {
+		if isPublicPath(c.Request.URL.Path) {
 			c.Next()
 			return
 		}
@@ -89,7 +89,8 @@ func authMiddleware(manager *auth.Manager) gin.HandlerFunc {
 }
 
 func isPublicPath(path string) bool {
-	return path == "/healthz" || path == "/readyz" || path == "/" || path == "/assets" || strings.HasPrefix(path, "/assets/")
+	return path == "/healthz" || path == "/readyz" || path == "/" || path == "/assets" || strings.HasPrefix(path, "/assets/") ||
+		path == "/api/v1/auth/status" || path == "/api/v1/auth/setup" || path == "/api/v1/auth/login"
 }
 
 func requestID(c *gin.Context) string {

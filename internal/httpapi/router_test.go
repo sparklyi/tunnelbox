@@ -91,11 +91,22 @@ func TestRouterUsesConsistentSecureSessionCookies(t *testing.T) {
 	t.Run("logout", func(t *testing.T) {
 		manager := testAuth(t)
 		router := newTestRouter(t, manager, true)
-		response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/logout", "", &http.Cookie{Name: auth.SessionCookie, Value: "session"})
+		token, err := manager.Login(context.Background(), "password123")
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/logout", "", &http.Cookie{Name: auth.SessionCookie, Value: token})
 		if response.Code != http.StatusNoContent {
 			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 		}
 		assertSessionCookie(t, response, true, true)
+	})
+
+	t.Run("logout requires session", func(t *testing.T) {
+		response := performJSONRequest(newTestRouter(t, testAuth(t), true), http.MethodPost, "/api/v1/auth/logout", "", nil)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
 	})
 }
 
