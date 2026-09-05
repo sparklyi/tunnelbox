@@ -11,12 +11,14 @@ paths:
   /healthz:
     get:
       security: []
+      summary: Check process health
       responses:
         '200':
           description: Process is alive.
   /readyz:
     get:
       security: []
+      summary: Check storage readiness
       responses:
         '200': { description: Storage is ready. }
         '503': { $ref: '#/components/responses/Error' }
