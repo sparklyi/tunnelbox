@@ -20,12 +20,19 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-type testAuthRepository struct{ sessions map[string]time.Time }
-
-func (r *testAuthRepository) PasswordHash(context.Context) ([]byte, error) {
-	return bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+type testAuthRepository struct {
+	hash     []byte
+	sessions map[string]time.Time
 }
-func (r *testAuthRepository) SavePasswordHash(context.Context, []byte) error { return nil }
+
+func (r *testAuthRepository) PasswordHash(context.Context) ([]byte, error) { return r.hash, nil }
+func (r *testAuthRepository) SavePasswordHash(_ context.Context, hash []byte) error {
+	if len(r.hash) > 0 {
+		return auth.ErrAlreadySetup
+	}
+	r.hash = hash
+	return nil
+}
 func (r *testAuthRepository) CreateSession(_ context.Context, token string, expires time.Time) error {
 	r.sessions[token] = expires
 	return nil
@@ -39,7 +46,111 @@ func (r *testAuthRepository) DeleteSession(_ context.Context, token string) erro
 	return nil
 }
 func testAuth(t *testing.T) *auth.Manager {
-	return auth.NewManager(&testAuthRepository{sessions: map[string]time.Time{}})
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash test password: %v", err)
+	}
+	return auth.NewManager(&testAuthRepository{hash: hash, sessions: map[string]time.Time{}})
+}
+
+func TestRouterUsesConsistentSecureSessionCookies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("setup", func(t *testing.T) {
+		manager := auth.NewManager(&testAuthRepository{sessions: map[string]time.Time{}})
+		router := newTestRouter(t, manager, true)
+		response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/setup", `{"password":"password123"}`, nil)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		assertSessionCookie(t, response, true, false)
+	})
+
+	t.Run("login", func(t *testing.T) {
+		manager := testAuth(t)
+		router := newTestRouter(t, manager, true)
+		response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/login", `{"password":"password123"}`, nil)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		assertSessionCookie(t, response, true, false)
+	})
+
+	t.Run("logout", func(t *testing.T) {
+		manager := testAuth(t)
+		router := newTestRouter(t, manager, true)
+		response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/logout", "", &http.Cookie{Name: auth.SessionCookie, Value: "session"})
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		assertSessionCookie(t, response, true, true)
+	})
+}
+
+func TestRouterRejectsInvalidJSONBodies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newTestRouter(t, testAuth(t), false)
+	tests := []struct {
+		name   string
+		body   string
+		status int
+		code   string
+	}{
+		{name: "unknown field", body: `{"password":"password123","extra":true}`, status: http.StatusBadRequest, code: "invalid_json"},
+		{name: "extra object", body: `{"password":"password123"}{}`, status: http.StatusBadRequest, code: "invalid_json"},
+		{name: "too large", body: `{"password":"` + strings.Repeat("x", int(maxJSONBodyBytes)) + `"}`, status: http.StatusRequestEntityTooLarge, code: "request_too_large"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/login", tt.body, nil)
+			if response.Code != tt.status || !strings.Contains(response.Body.String(), `"code":"`+tt.code+`"`) {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func newTestRouter(t *testing.T, manager *auth.Manager, secure bool) http.Handler {
+	t.Helper()
+	router, err := NewRouter(Dependencies{
+		Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Auth: manager, SecureCookies: secure,
+	})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
+	return router
+}
+
+func performJSONRequest(handler http.Handler, method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	if cookie != nil {
+		request.AddCookie(cookie)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func assertSessionCookie(t *testing.T, response *httptest.ResponseRecorder, secure, deleted bool) {
+	t.Helper()
+	var session *http.Cookie
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == auth.SessionCookie {
+			session = cookie
+			break
+		}
+	}
+	if session == nil {
+		t.Fatal("session cookie not set")
+	}
+	if session.Path != "/" || !session.HttpOnly || session.Secure != secure || session.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie attributes = %+v", session)
+	}
+	if deleted != (session.MaxAge < 0) {
+		t.Fatalf("cookie MaxAge = %d, deleted = %v", session.MaxAge, deleted)
+	}
 }
 func addTestCookie(t *testing.T, req *http.Request, manager *auth.Manager) {
 	token, err := manager.Login(context.Background(), "password123")
