@@ -26,9 +26,9 @@ func (s *Store) EnsureWorkspace(ctx context.Context, id, name string) error {
 func (s *Store) GetWorkspace(ctx context.Context, id string) (service.Workspace, error) {
 	var workspace service.Workspace
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, account_id, zone_id, cloudflare_token_path, admin_token_path
+		SELECT id, name, account_id, zone_id, cloudflare_token_path
 		FROM workspace WHERE id = ?`, id).Scan(&workspace.ID, &workspace.Name, &workspace.AccountID, &workspace.ZoneID,
-		&workspace.CloudflareTokenPath, &workspace.AdminTokenPath)
+		&workspace.CloudflareTokenPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return service.Workspace{}, service.ErrNotFound
 	}

@@ -75,10 +75,15 @@ func TestDeletingServiceKeepsOperationHistory(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	item := service.Service{ID: "svc_delete", WorkspaceID: "default", Name: "Draft", Mode: service.ModeQuick,
-		Hostname: "quick-svc_delete.invalid", OriginURL: "http://127.0.0.1:3000", State: service.StateDraft,
+		OriginURL: "http://127.0.0.1:3000", State: service.StateDraft,
 		CreatedAt: now, UpdatedAt: now}
 	if err := store.Services().Create(ctx, item); err != nil {
 		t.Fatalf("create service: %v", err)
+	}
+	second := item
+	second.ID = "svc_second_quick"
+	if err := store.Services().Create(ctx, second); err != nil {
+		t.Fatalf("create second quick service: %v", err)
 	}
 	op := operation.Operation{ID: "op_delete", ServiceID: item.ID, Kind: "delete", Status: operation.StatusSucceeded, CreatedAt: now, UpdatedAt: now}
 	if err := store.Operations().Create(ctx, op); err != nil {

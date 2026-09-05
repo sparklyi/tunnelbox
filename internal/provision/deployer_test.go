@@ -165,7 +165,7 @@ func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 	}
 	services := service.NewUseCase(store.Services(), "default")
 	item, err := services.Create(context.Background(), service.CreateInput{
-		Name: "Demo", Hostname: "demo.example.com", OriginURL: "http://127.0.0.1:8080",
+		Name: "Demo", Mode: service.ModePublic, Hostname: "demo.example.com", OriginURL: "http://127.0.0.1:8080",
 		AllowType: service.AllowEmail, AllowValue: "user@example.com",
 	})
 	if err != nil {
