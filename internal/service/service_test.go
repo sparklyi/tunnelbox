@@ -80,7 +80,7 @@ func TestUseCaseCreateNormalizesAndRejectsUnsafeOrigin(t *testing.T) {
 	repo := newMemoryRepository()
 	useCase := NewUseCase(repo, "workspace")
 	item, err := useCase.Create(context.Background(), CreateInput{
-		Name: "  Demo ", Hostname: "App.Example.COM", OriginURL: "https://127.0.0.1:8443/path",
+		Name: "  Demo ", Mode: ModePublic, Hostname: "App.Example.COM", OriginURL: "https://127.0.0.1:8443/path",
 		AllowType: " email ", AllowValue: "User@Example.COM",
 	})
 	if err != nil {
@@ -90,14 +90,14 @@ func TestUseCaseCreateNormalizesAndRejectsUnsafeOrigin(t *testing.T) {
 		t.Fatalf("unexpected normalized item: %+v", item)
 	}
 	if item.Mode != ModePublic {
-		t.Fatalf("legacy request mode = %q, want %q", item.Mode, ModePublic)
+		t.Fatalf("request mode = %q, want %q", item.Mode, ModePublic)
 	}
 	if item.State != StateDraft || item.CreatedAt.IsZero() {
 		t.Fatalf("unexpected initial state: %+v", item)
 	}
 
 	_, err = useCase.Create(context.Background(), CreateInput{
-		Name: "bad", Hostname: "bad.example.com", OriginURL: "file:///tmp/x",
+		Name: "bad", Mode: ModePublic, Hostname: "bad.example.com", OriginURL: "file:///tmp/x",
 		AllowType: AllowEmail, AllowValue: "user@example.com",
 	})
 	var validation *ValidationError
@@ -118,8 +118,8 @@ func TestUseCaseCreateQuickDoesNotRequireCloudflareOrAccess(t *testing.T) {
 	if item.Mode != ModeQuick || item.AllowType != "" || item.AllowValue != "" {
 		t.Fatalf("quick item = %+v", item)
 	}
-	if item.Hostname == "" || !isQuickPlaceholder(item.Hostname) {
-		t.Fatalf("quick hostname = %q, want internal placeholder", item.Hostname)
+	if item.Hostname != "" {
+		t.Fatalf("quick hostname = %q, want empty", item.Hostname)
 	}
 
 	_, err = useCase.Create(context.Background(), CreateInput{
@@ -128,6 +128,19 @@ func TestUseCaseCreateQuickDoesNotRequireCloudflareOrAccess(t *testing.T) {
 	var validation *ValidationError
 	if !errors.As(err, &validation) || validation.Field != "hostname" {
 		t.Fatalf("quick hostname error = %v, want hostname validation", err)
+	}
+}
+
+func TestUseCaseCreateRequiresValidMode(t *testing.T) {
+	useCase := NewUseCase(newMemoryRepository(), "workspace")
+	for _, mode := range []Mode{"", "managed"} {
+		_, err := useCase.Create(context.Background(), CreateInput{
+			Name: "Invalid", Mode: mode, OriginURL: "http://127.0.0.1:3000",
+		})
+		var validation *ValidationError
+		if !errors.As(err, &validation) || validation.Field != "mode" {
+			t.Fatalf("mode %q error = %v, want mode validation", mode, err)
+		}
 	}
 }
 
@@ -191,7 +204,7 @@ func TestUseCaseUpdateBlocksDeployingService(t *testing.T) {
 	repo := newMemoryRepository()
 	useCase := NewUseCase(repo, "workspace")
 	item, err := useCase.Create(context.Background(), CreateInput{
-		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		Name: "Demo", Mode: ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
 		AllowType: AllowEmailDomain, AllowValue: "example.com",
 	})
 	if err != nil {
@@ -210,7 +223,7 @@ func TestUseCaseUpdateBlocksActiveService(t *testing.T) {
 	repo := newMemoryRepository()
 	useCase := NewUseCase(repo, "workspace")
 	item, err := useCase.Create(context.Background(), CreateInput{
-		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		Name: "Demo", Mode: ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
 		AllowType: AllowEmail, AllowValue: "user@example.com",
 	})
 	if err != nil {
@@ -228,7 +241,7 @@ func TestUseCaseUpdateBlocksStoppingService(t *testing.T) {
 	repo := newMemoryRepository()
 	useCase := NewUseCase(repo, "workspace")
 	item, err := useCase.Create(context.Background(), CreateInput{
-		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		Name: "Demo", Mode: ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
 		AllowType: AllowEmail, AllowValue: "user@example.com",
 	})
 	if err != nil {
@@ -246,7 +259,7 @@ func TestUseCaseUpdateBlocksModeChangeWithRemoteRefs(t *testing.T) {
 	repo := newMemoryRepository()
 	useCase := NewUseCase(repo, "workspace")
 	item, err := useCase.Create(context.Background(), CreateInput{
-		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		Name: "Demo", Mode: ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
 		AllowType: AllowEmail, AllowValue: "user@example.com",
 	})
 	if err != nil {
@@ -275,7 +288,7 @@ func TestUseCaseDeleteBlocksManagedService(t *testing.T) {
 	repo := newMemoryRepository()
 	useCase := NewUseCase(repo, "workspace")
 	item, err := useCase.Create(context.Background(), CreateInput{
-		Name: "Demo", Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		Name: "Demo", Mode: ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
 		AllowType: AllowEmail, AllowValue: "user@example.com",
 	})
 	if err != nil {

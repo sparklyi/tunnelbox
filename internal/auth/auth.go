@@ -26,6 +26,7 @@ type Repository interface {
 	CreateSession(context.Context, string, time.Time) error
 	SessionValid(context.Context, string, time.Time) (bool, error)
 	DeleteSession(context.Context, string) error
+	DeleteExpiredSessions(context.Context, time.Time) error
 }
 
 type Manager struct {
@@ -46,6 +47,9 @@ func (m *Manager) Setup(ctx context.Context, password string) (string, error) {
 	if err := validatePassword(password); err != nil {
 		return "", err
 	}
+	if err := m.repository.DeleteExpiredSessions(ctx, m.now()); err != nil {
+		return "", err
+	}
 	hash, err := m.repository.PasswordHash(ctx)
 	if err != nil {
 		return "", err
@@ -64,6 +68,9 @@ func (m *Manager) Setup(ctx context.Context, password string) (string, error) {
 }
 
 func (m *Manager) Login(ctx context.Context, password string) (string, error) {
+	if err := m.repository.DeleteExpiredSessions(ctx, m.now()); err != nil {
+		return "", err
+	}
 	hash, err := m.repository.PasswordHash(ctx)
 	if err != nil {
 		return "", err

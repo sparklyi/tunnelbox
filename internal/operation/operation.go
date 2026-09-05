@@ -13,6 +13,7 @@ import (
 var (
 	ErrNotFound = errors.New("operation not found")
 	ErrConflict = errors.New("service already has an active operation")
+	ErrClosed   = errors.New("operation manager is shut down")
 )
 
 type Status string
@@ -73,10 +74,15 @@ type Manager struct {
 	mu     sync.Mutex
 	active map[string]struct{}
 	now    func() time.Time
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	closed bool
 }
 
 func NewManager(repo Repository) *Manager {
-	return &Manager{repo: repo, active: make(map[string]struct{}), now: time.Now}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Manager{repo: repo, active: make(map[string]struct{}), now: time.Now, ctx: ctx, cancel: cancel}
 }
 
 func (m *Manager) Start(ctx context.Context, serviceID, kind string, task Task) (Operation, error) {
@@ -84,6 +90,10 @@ func (m *Manager) Start(ctx context.Context, serviceID, kind string, task Task) 
 		return Operation{}, errors.New("service id, kind and task are required")
 	}
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return Operation{}, ErrClosed
+	}
 	if _, exists := m.active[serviceID]; exists {
 		m.mu.Unlock()
 		return Operation{}, ErrConflict
@@ -102,12 +112,15 @@ func (m *Manager) Start(ctx context.Context, serviceID, kind string, task Task) 
 		return Operation{}, err
 	}
 	m.active[serviceID] = struct{}{}
+	m.wg.Add(1)
 	m.mu.Unlock()
-	go m.run(ctx, op, task)
+	go m.run(m.ctx, op, task)
 	return op, nil
 }
 
 func (m *Manager) run(ctx context.Context, op Operation, task Task) {
+	defer m.wg.Done()
+	defer m.release(op.ServiceID)
 	now := m.now().UTC()
 	op.Status = StatusRunning
 	op.Attempts++
@@ -119,7 +132,6 @@ func (m *Manager) run(ctx context.Context, op Operation, task Task) {
 		op.ErrorMessage = "operation state could not be updated"
 		op.UpdatedAt = m.now().UTC()
 		_ = m.repo.Update(context.Background(), op)
-		m.release(op.ServiceID)
 		return
 	}
 	err := task(ctx, op)
@@ -161,7 +173,6 @@ func (m *Manager) run(ctx context.Context, op Operation, task Task) {
 		op.ErrorMessage = "operation result could not be persisted"
 		_ = m.repo.Update(context.Background(), op)
 	}
-	m.release(op.ServiceID)
 }
 
 func (m *Manager) Get(ctx context.Context, id string) (Operation, error) {
@@ -202,15 +213,41 @@ func (m *Manager) Recover(ctx context.Context, resolver func(Operation) Task) er
 			continue
 		}
 		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			continue
+		}
 		if _, exists := m.active[op.ServiceID]; exists {
 			m.mu.Unlock()
 			continue
 		}
 		m.active[op.ServiceID] = struct{}{}
+		m.wg.Add(1)
 		m.mu.Unlock()
-		go m.run(ctx, op, task)
+		go m.run(m.ctx, op, task)
 	}
 	return nil
+}
+
+func (m *Manager) Shutdown(ctx context.Context) error {
+	m.mu.Lock()
+	if !m.closed {
+		m.closed = true
+		m.cancel()
+	}
+	m.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (m *Manager) release(serviceID string) {

@@ -20,7 +20,7 @@ var requestSequence atomic.Uint64
 
 func requestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id := strings.TrimSpace(c.GetHeader("X-Request-ID"))
+		id := c.GetHeader("X-Request-ID")
 		if !validRequestID(id) {
 			id = newRequestID()
 		}
@@ -62,7 +62,7 @@ func errorMiddleware() gin.HandlerFunc {
 
 func authMiddleware(manager *auth.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if isPublicPath(c.Request.URL.Path) || strings.HasPrefix(c.Request.URL.Path, "/api/v1/auth/") {
+		if isPublicPath(c.Request.URL.Path) {
 			c.Next()
 			return
 		}
@@ -89,7 +89,8 @@ func authMiddleware(manager *auth.Manager) gin.HandlerFunc {
 }
 
 func isPublicPath(path string) bool {
-	return path == "/healthz" || path == "/readyz" || path == "/" || path == "/assets" || strings.HasPrefix(path, "/assets/")
+	return path == "/healthz" || path == "/readyz" || path == "/" || path == "/assets" || strings.HasPrefix(path, "/assets/") ||
+		path == "/api/v1/auth/status" || path == "/api/v1/auth/setup" || path == "/api/v1/auth/login"
 }
 
 func requestID(c *gin.Context) string {
@@ -105,8 +106,10 @@ func validRequestID(value string) bool {
 	if value == "" || len(value) > 96 {
 		return false
 	}
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
+	for i := 0; i < len(value); i++ {
+		char := value[i]
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') && char != '.' && char != '_' && char != '-' {
 			return false
 		}
 	}

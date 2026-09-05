@@ -8,7 +8,6 @@ type Workspace struct {
 	AccountID           string
 	ZoneID              string
 	CloudflareTokenPath string
-	AdminTokenPath      string
 }
 
 // WorkspaceRepository is the narrow settings contract consumed by the

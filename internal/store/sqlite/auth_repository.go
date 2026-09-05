@@ -67,4 +67,11 @@ func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
 	return nil
 }
 
+func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM auth_session WHERE expires_at <= ?`, now.UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("delete expired authentication sessions: %w", err)
+	}
+	return nil
+}
+
 var _ auth.Repository = (*Store)(nil)

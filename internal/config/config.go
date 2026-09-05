@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 )
 
 type Config struct {
@@ -15,9 +16,14 @@ type Config struct {
 	CloudflaredBinary   string
 	CloudflaredDataDir  string
 	WebDir              string
+	SecureCookies       bool
 }
 
 func Load() (Config, error) {
+	secureCookies, err := strconv.ParseBool(valueOr("TUNNELBOX_COOKIE_SECURE", "false"))
+	if err != nil {
+		return Config{}, fmt.Errorf("TUNNELBOX_COOKIE_SECURE must be a boolean: %w", err)
+	}
 	cfg := Config{
 		ListenAddress:       valueOr("TUNNELBOX_LISTEN", "127.0.0.1:8080"),
 		DatabasePath:        valueOr("TUNNELBOX_DATABASE", "data/tunnelbox.db"),
@@ -27,6 +33,7 @@ func Load() (Config, error) {
 		CloudflaredBinary:   valueOr("TUNNELBOX_CLOUDFLARED_BINARY", "cloudflared"),
 		CloudflaredDataDir:  valueOr("TUNNELBOX_CLOUDFLARED_DATA_DIR", "data/cloudflared"),
 		WebDir:              valueOr("TUNNELBOX_WEB_DIR", "web/dist"),
+		SecureCookies:       secureCookies,
 	}
 	if cfg.ListenAddress == "" {
 		return Config{}, fmt.Errorf("TUNNELBOX_LISTEN must not be empty")

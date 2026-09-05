@@ -8,6 +8,7 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       TUNNELBOX_LISTEN: 0.0.0.0:8080
+      TUNNELBOX_COOKIE_SECURE: "${TUNNELBOX_COOKIE_SECURE:-false}"
       GIN_MODE: release
       TUNNELBOX_DATABASE: /app/data/tunnelbox.db
       TUNNELBOX_WEB_DIR: /app/web/dist

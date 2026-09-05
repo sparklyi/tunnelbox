@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/sparklyi/tunnelbox/internal/auth"
@@ -57,17 +58,18 @@ type ConnectorLister interface {
 }
 
 type Dependencies struct {
-	Services   ServiceActions
-	Operations OperationReader
-	Deployer   ServiceDeployer
-	Stopper    ServiceStopper
-	Deleter    ServiceDeleter
-	Cloudflare CloudflareIntegration
-	Connectors ConnectorLister
-	Auth       *auth.Manager
-	Logger     *slog.Logger
-	Readiness  func(context.Context) error
-	WebDir     string
+	Services      ServiceActions
+	Operations    OperationReader
+	Deployer      ServiceDeployer
+	Stopper       ServiceStopper
+	Deleter       ServiceDeleter
+	Cloudflare    CloudflareIntegration
+	Connectors    ConnectorLister
+	Auth          *auth.Manager
+	SecureCookies bool
+	Logger        *slog.Logger
+	Readiness     func(context.Context) error
+	WebDir        string
 }
 
 func NewRouter(deps Dependencies) (*gin.Engine, error) {
@@ -97,10 +99,11 @@ func NewRouter(deps Dependencies) (*gin.Engine, error) {
 	})
 
 	api := router.Group("/api/v1")
+	authLimiter := newAuthAttemptLimiter(5, 5*time.Minute)
 	api.GET("/auth/status", authStatusHandler(deps.Auth))
-	api.POST("/auth/setup", authSetupHandler(deps.Auth))
-	api.POST("/auth/login", authLoginHandler(deps.Auth))
-	api.POST("/auth/logout", authLogoutHandler(deps.Auth))
+	api.POST("/auth/setup", authSetupHandler(deps.Auth, deps.SecureCookies, authLimiter))
+	api.POST("/auth/login", authLoginHandler(deps.Auth, deps.SecureCookies, authLimiter))
+	api.POST("/auth/logout", authLogoutHandler(deps.Auth, deps.SecureCookies))
 	api.PUT("/integrations/cloudflare", configureCloudflareHandler(deps.Cloudflare))
 	api.GET("/integrations/cloudflare/status", cloudflareStatusHandler(deps.Cloudflare))
 	api.GET("/zones", listZonesHandler(deps.Cloudflare))

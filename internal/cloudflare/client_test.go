@@ -3,6 +3,7 @@ package cloudflare
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -119,7 +120,18 @@ func TestClientUsesSafeTunnelAccessAndDNSFlow(t *testing.T) {
 }
 
 func writeEnvelope(w http.ResponseWriter, result any) {
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "errors": []any{}, "result": result})
+	writePageEnvelope(w, result, 1, 100, 1)
+}
+
+func writePageEnvelope(w http.ResponseWriter, result any, page, perPage, totalPages int) {
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"errors":  []any{},
+		"result":  result,
+		"result_info": map[string]any{
+			"page": page, "per_page": perPage, "total_pages": totalPages,
+		},
+	})
 }
 
 func TestClientPrivateRouteAndAccessApplication(t *testing.T) {
@@ -238,6 +250,164 @@ func TestClientDeletesOwnedResourcesAndTreatsMissingResourcesAsSuccess(t *testin
 	}
 	if !strings.EqualFold(strings.Join(paths, "\n"), strings.Join(want, "\n")) {
 		t.Fatalf("delete paths = %v, want %v", paths, want)
+	}
+}
+
+func TestClientValidatesHostnameWithinSelectedZone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/zones/zone" {
+			http.Error(w, `{"success":false}`, http.StatusNotFound)
+			return
+		}
+		writeEnvelope(w, map[string]any{"id": "zone", "name": " Example.COM. "})
+	}))
+	defer server.Close()
+
+	client, err := New(Config{Token: "secret", AccountID: "acct", ZoneID: "zone", BaseURL: server.URL + "/"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	for _, hostname := range []string{"example.com", "API.Example.COM.", " api.example.com "} {
+		if err := client.ValidateHostname(context.Background(), hostname); err != nil {
+			t.Errorf("ValidateHostname(%q): %v", hostname, err)
+		}
+	}
+	for _, hostname := range []string{"notexample.com", "example.com.invalid", ""} {
+		if err := client.ValidateHostname(context.Background(), hostname); err == nil || err.Error() != "hostname_not_in_zone" {
+			t.Errorf("ValidateHostname(%q) error = %v, want hostname_not_in_zone", hostname, err)
+		}
+	}
+}
+
+func TestClientListsAllCloudflarePages(t *testing.T) {
+	pages := make(map[string][]string)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		page := r.URL.Query().Get("page")
+		if r.Method == http.MethodGet && page != "" {
+			pages[r.URL.Path] = append(pages[r.URL.Path], page)
+			if r.URL.Query().Get("per_page") == "" {
+				t.Errorf("%s omitted per_page", r.URL.Path)
+			}
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/zones":
+			if r.URL.Query().Get("account.id") != "acct" {
+				t.Errorf("zone account filter = %q", r.URL.Query().Get("account.id"))
+			}
+			if page == "1" {
+				writePageEnvelope(w, []any{map[string]any{"id": "zone_1", "name": "one.example"}}, 1, 1, 2)
+			} else {
+				writePageEnvelope(w, []any{map[string]any{"id": "zone_2", "name": "two.example"}}, 2, 1, 2)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct/cfd_tunnel":
+			if r.URL.Query().Get("name") != "tunnelbox-existing" || r.URL.Query().Get("is_deleted") != "false" {
+				t.Errorf("tunnel filters = %v", r.URL.Query())
+			}
+			if page == "1" {
+				writePageEnvelope(w, []any{map[string]any{"id": "tun_1", "name": "tunnelbox-existing"}}, 1, 1, 2)
+			} else {
+				writePageEnvelope(w, []any{map[string]any{"id": "tun_2", "name": "tunnelbox-existing"}}, 2, 1, 2)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct/teamnet/routes":
+			if page == "1" {
+				writePageEnvelope(w, []any{map[string]any{"id": "route_other", "network": "10.0.0.0/24", "tunnel_id": "tun_other"}}, 1, 1, 2)
+			} else {
+				writePageEnvelope(w, []any{map[string]any{"id": "route_existing", "network": "192.168.1.20/32", "tunnel_id": "tun_existing"}}, 2, 1, 2)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct/access/apps":
+			if r.URL.Query().Get("domain") != "app.example.com" || r.URL.Query().Get("exact") != "true" {
+				t.Errorf("application filters = %v", r.URL.Query())
+			}
+			if page == "1" {
+				writePageEnvelope(w, []any{map[string]any{"id": "app_other", "name": "Other", "domain": "app.example.com"}}, 1, 1, 2)
+			} else {
+				writePageEnvelope(w, []any{map[string]any{"id": "app_existing", "name": "Demo", "domain": "app.example.com"}}, 2, 1, 2)
+			}
+		case r.Method == http.MethodPut && r.URL.Path == "/accounts/acct/access/apps/app_existing":
+			writeEnvelope(w, map[string]any{"id": "app_existing"})
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/acct/access/apps/app_existing/policies":
+			if page == "1" {
+				writePageEnvelope(w, []any{map[string]any{"id": "policy_other", "name": "Other"}}, 1, 1, 2)
+			} else {
+				writePageEnvelope(w, []any{map[string]any{"id": "policy_existing", "name": "Allow"}}, 2, 1, 2)
+			}
+		case r.Method == http.MethodPut && r.URL.Path == "/accounts/acct/access/apps/app_existing/policies/policy_existing":
+			writeEnvelope(w, map[string]any{"id": "policy_existing"})
+		default:
+			http.Error(w, `{"success":false}`, http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New(Config{Token: "secret", AccountID: "acct", ZoneID: "zone_2", BaseURL: server.URL + "/"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	zones, err := client.Zones(context.Background())
+	if err != nil || len(zones) != 2 || zones[1].ID != "zone_2" {
+		t.Fatalf("zones = %+v, err=%v", zones, err)
+	}
+	_, err = client.EnsureTunnel(context.Background(), provision.TunnelSpec{Name: "tunnelbox-existing"})
+	if err == nil || err.Error() != "tunnel_name_conflict" {
+		t.Fatalf("tunnel error = %v, want tunnel_name_conflict", err)
+	}
+	route, err := client.EnsurePrivateRoute(context.Background(), provision.PrivateRouteSpec{Network: "192.168.1.20/32", TunnelID: "tun_existing"})
+	if err != nil || route.ID != "route_existing" {
+		t.Fatalf("route = %+v, err=%v", route, err)
+	}
+	application, err := client.EnsureApplication(context.Background(), provision.AccessApplicationSpec{Name: "Demo", Domain: "app.example.com"})
+	if err != nil || application.ID != "app_existing" {
+		t.Fatalf("application = %+v, err=%v", application, err)
+	}
+	policy, err := client.EnsurePolicy(context.Background(), provision.AccessPolicySpec{
+		ApplicationID: application.ID, Name: "Allow", AllowType: "email", AllowValue: "user@example.com",
+	})
+	if err != nil || policy.ID != "policy_existing" {
+		t.Fatalf("policy = %+v, err=%v", policy, err)
+	}
+
+	for _, path := range []string{
+		"/zones",
+		"/accounts/acct/cfd_tunnel",
+		"/accounts/acct/teamnet/routes",
+		"/accounts/acct/access/apps",
+		"/accounts/acct/access/apps/app_existing/policies",
+	} {
+		if got := strings.Join(pages[path], ","); got != "1,2" {
+			t.Errorf("pages for %s = %q, want 1,2", path, got)
+		}
+	}
+}
+
+func TestClientRejectsPaginationThatDoesNotAdvance(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		writePageEnvelope(w, []any{map[string]any{"id": "zone_1", "name": "example.com"}}, 1, 1, 2)
+	}))
+	defer server.Close()
+
+	client, err := New(Config{Token: "secret", AccountID: "acct", BaseURL: server.URL + "/"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	_, err = client.Zones(context.Background())
+	if err == nil || err.Error() != "cloudflare_invalid_pagination" {
+		t.Fatalf("Zones() error = %v, want cloudflare_invalid_pagination", err)
+	}
+}
+
+func TestClientPaginationHonorsCanceledContext(t *testing.T) {
+	client, err := New(Config{Token: "secret", AccountID: "acct", BaseURL: "http://127.0.0.1/"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = client.Zones(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Zones() error = %v, want context.Canceled", err)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 
 	cloudflarego "github.com/cloudflare/cloudflare-go/v2"
 	"github.com/cloudflare/cloudflare-go/v2/option"
-	"github.com/cloudflare/cloudflare-go/v2/zones"
 	"github.com/sparklyi/tunnelbox/internal/provision"
 )
 
@@ -104,16 +103,16 @@ func (c *Client) VerifyToken(ctx context.Context) (TokenStatus, error) {
 type Zone = provision.Zone
 
 func (c *Client) Zones(ctx context.Context) ([]Zone, error) {
-	params := zones.ZoneListParams{PerPage: cloudflarego.F(float64(100))}
+	query := url.Values{"per_page": {"100"}}
 	if c.accountID != "" {
-		params.Account = cloudflarego.F(zones.ZoneListParamsAccount{ID: cloudflarego.F(c.accountID)})
+		query.Set("account.id", c.accountID)
 	}
-	page, err := c.api.Zones.List(ctx, params)
+	items, err := listAllPages[zoneResult](ctx, c, "zones?"+query.Encode())
 	if err != nil {
-		return nil, normalizeError(err)
+		return nil, err
 	}
-	result := make([]Zone, 0, len(page.Result))
-	for _, item := range page.Result {
+	result := make([]Zone, 0, len(items))
+	for _, item := range items {
 		result = append(result, Zone{ID: item.ID, Name: item.Name})
 	}
 	return result, nil
@@ -129,9 +128,9 @@ func (c *Client) EnsureTunnel(ctx context.Context, spec provision.TunnelSpec) (p
 			return provision.RemoteTunnel{}, err
 		}
 	} else {
-		var existing []tunnelResult
-		path := c.accountPath("cfd_tunnel") + "?name=" + url.QueryEscape(spec.Name) + "&is_deleted=false&per_page=100"
-		if err := c.call(ctx, http.MethodGet, path, nil, &existing); err != nil {
+		query := url.Values{"name": {spec.Name}, "is_deleted": {"false"}, "per_page": {"100"}}
+		existing, err := listAllPages[tunnelResult](ctx, c, c.accountPath("cfd_tunnel")+"?"+query.Encode())
+		if err != nil {
 			return provision.RemoteTunnel{}, err
 		}
 		switch len(existing) {
@@ -209,8 +208,8 @@ func (c *Client) EnsurePrivateRoute(ctx context.Context, spec provision.PrivateR
 		path = c.accountPath("teamnet", "routes", spec.ID)
 		method = http.MethodPatch
 	} else {
-		var existing []privateRouteResult
-		if err := c.call(ctx, http.MethodGet, path+"?per_page=1000", nil, &existing); err != nil {
+		existing, err := listAllPages[privateRouteResult](ctx, c, path+"?per_page=1000")
+		if err != nil {
 			return provision.RemoteRef{}, err
 		}
 		matches := make([]privateRouteResult, 0, len(existing))
@@ -281,9 +280,9 @@ func (c *Client) EnsureApplication(ctx context.Context, spec provision.AccessApp
 		method = http.MethodPut
 		path = c.accountPath("access", "apps", spec.ID)
 	} else {
-		var existing []accessApplicationResult
-		lookupPath := path + "?domain=" + url.QueryEscape(domain) + "&exact=true&per_page=100"
-		if err := c.call(ctx, http.MethodGet, lookupPath, nil, &existing); err != nil {
+		query := url.Values{"domain": {domain}, "exact": {"true"}, "per_page": {"100"}}
+		existing, err := listAllPages[accessApplicationResult](ctx, c, path+"?"+query.Encode())
+		if err != nil {
 			return provision.RemoteRef{}, err
 		}
 		matches := make([]accessApplicationResult, 0, len(existing))
@@ -367,8 +366,8 @@ func (c *Client) EnsurePolicy(ctx context.Context, spec provision.AccessPolicySp
 		method = http.MethodPut
 		path = c.accountPath("access", "apps", spec.ApplicationID, "policies", spec.ID)
 	} else {
-		var existing []accessPolicyResult
-		if err := c.call(ctx, http.MethodGet, path+"?per_page=1000", nil, &existing); err != nil {
+		existing, err := listAllPages[accessPolicyResult](ctx, c, path+"?per_page=1000")
+		if err != nil {
 			return provision.RemoteRef{}, err
 		}
 		matches := make([]accessPolicyResult, 0, len(existing))
@@ -442,6 +441,25 @@ func (c *Client) EnsureCNAME(ctx context.Context, spec provision.CNAMESpec) (pro
 	return provision.RemoteRef{ID: result.ID}, nil
 }
 
+func (c *Client) ValidateHostname(ctx context.Context, hostname string) error {
+	if c.zoneID == "" {
+		return &Error{Code: "cloudflare_zone_required"}
+	}
+	var zone zoneResult
+	if err := c.call(ctx, http.MethodGet, c.zonePath(), nil, &zone); err != nil {
+		return err
+	}
+	zoneName := canonicalDNSName(zone.Name)
+	hostname = canonicalDNSName(hostname)
+	if zoneName == "" {
+		return &Error{Code: "cloudflare_invalid_zone_response"}
+	}
+	if hostname != zoneName && !strings.HasSuffix(hostname, "."+zoneName) {
+		return &Error{Code: "hostname_not_in_zone"}
+	}
+	return nil
+}
+
 func (c *Client) DeleteCNAME(ctx context.Context, id string) error {
 	if c.zoneID == "" {
 		return &Error{Code: "cloudflare_zone_required"}
@@ -453,14 +471,26 @@ func (c *Client) DeleteCNAME(ctx context.Context, id string) error {
 }
 
 type apiEnvelope struct {
-	Success bool            `json:"success"`
-	Errors  []apiMessage    `json:"errors"`
-	Result  json.RawMessage `json:"result"`
+	Success    bool            `json:"success"`
+	Errors     []apiMessage    `json:"errors"`
+	Result     json.RawMessage `json:"result"`
+	ResultInfo *pageInfo       `json:"result_info"`
 }
 
 type apiMessage struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+type pageInfo struct {
+	Page       int  `json:"page"`
+	PerPage    int  `json:"per_page"`
+	TotalPages *int `json:"total_pages"`
+}
+
+type zoneResult struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type tunnelResult struct {
@@ -494,24 +524,94 @@ type privateRouteResult struct {
 }
 
 func (c *Client) call(ctx context.Context, method, path string, body any, result any) error {
+	envelope, err := c.callEnvelope(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	return decodeResult(envelope.Result, result)
+}
+
+func (c *Client) callEnvelope(ctx context.Context, method, path string, body any) (apiEnvelope, error) {
 	var envelope apiEnvelope
 	if err := c.api.Execute(ctx, method, path, body, &envelope); err != nil {
-		return normalizeError(err)
+		return apiEnvelope{}, normalizeError(err)
 	}
 	if !envelope.Success || len(envelope.Errors) > 0 {
 		code := "cloudflare_api_error"
 		if len(envelope.Errors) > 0 && envelope.Errors[0].Code != 0 {
 			code = fmt.Sprintf("cloudflare_%d", envelope.Errors[0].Code)
 		}
-		return &Error{Code: code}
+		return apiEnvelope{}, &Error{Code: code}
 	}
-	if result == nil || len(envelope.Result) == 0 || string(envelope.Result) == "null" {
+	return envelope, nil
+}
+
+func decodeResult(raw json.RawMessage, result any) error {
+	if result == nil || len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
-	if err := json.Unmarshal(envelope.Result, result); err != nil {
+	if err := json.Unmarshal(raw, result); err != nil {
 		return &Error{Code: "cloudflare_invalid_response", Cause: err}
 	}
 	return nil
+}
+
+func listAllPages[T any](ctx context.Context, client *Client, path string) ([]T, error) {
+	endpoint, err := url.Parse(path)
+	if err != nil {
+		return nil, &Error{Code: "cloudflare_invalid_pagination", Cause: err}
+	}
+	query := endpoint.Query()
+	if query.Get("per_page") == "" {
+		query.Set("per_page", "100")
+	}
+	var result []T
+	for requestedPage := 1; ; requestedPage++ {
+		if err := ctx.Err(); err != nil {
+			return nil, normalizeError(err)
+		}
+		query.Set("page", strconv.Itoa(requestedPage))
+		endpoint.RawQuery = query.Encode()
+		var items []T
+		envelope, err := client.callEnvelope(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		if envelope.ResultInfo == nil {
+			return nil, &Error{Code: "cloudflare_invalid_pagination"}
+		}
+		if err := decodeResult(envelope.Result, &items); err != nil {
+			return nil, err
+		}
+		done, err := paginationDone(*envelope.ResultInfo, requestedPage, len(items))
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, items...)
+		if done {
+			return result, nil
+		}
+	}
+}
+
+func paginationDone(info pageInfo, requestedPage, itemCount int) (bool, error) {
+	invalid := func() (bool, error) {
+		return false, &Error{Code: "cloudflare_invalid_pagination"}
+	}
+	if info.Page != requestedPage || info.PerPage <= 0 || itemCount > info.PerPage {
+		return invalid()
+	}
+	if info.TotalPages == nil {
+		return itemCount < info.PerPage, nil
+	}
+	totalPages := *info.TotalPages
+	if totalPages < 0 || totalPages == 0 && (requestedPage != 1 || itemCount != 0) || totalPages > 0 && requestedPage > totalPages {
+		return invalid()
+	}
+	if totalPages > requestedPage && itemCount == 0 {
+		return invalid()
+	}
+	return totalPages == 0 || requestedPage == totalPages, nil
 }
 
 func (c *Client) callDelete(ctx context.Context, path string) error {
@@ -597,6 +697,10 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func canonicalDNSName(value string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
 }
 
 var _ provision.TunnelPort = (*Client)(nil)

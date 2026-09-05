@@ -73,7 +73,13 @@ func (p recordingAccess) EnsurePolicy(context.Context, AccessPolicySpec) (Remote
 }
 
 type recordingDNS struct {
-	calls *[]string
+	calls           *[]string
+	validationError error
+}
+
+func (p recordingDNS) ValidateHostname(context.Context, string) error {
+	*p.calls = append(*p.calls, "zone_validation")
+	return p.validationError
 }
 
 func (p recordingDNS) EnsureCNAME(context.Context, CNAMESpec) (RemoteRef, error) {
@@ -124,10 +130,11 @@ func (p cleanupDNS) DeleteCNAME(context.Context, string) error {
 }
 
 type recordingConnector struct {
-	calls     *[]string
-	specs     *[]ConnectorSpec
-	status    ConnectorStatus
-	stopError error
+	calls                  *[]string
+	specs                  *[]ConnectorSpec
+	status                 ConnectorStatus
+	stopError              error
+	deleteCredentialsError error
 }
 
 func (p recordingConnector) EnsureRunning(_ context.Context, spec ConnectorSpec) error {
@@ -153,6 +160,11 @@ func (p recordingConnector) Stop(context.Context, string) error {
 	return p.stopError
 }
 
+func (p recordingConnector) DeleteCredentials(context.Context, string) error {
+	*p.calls = append(*p.calls, "credentials_delete")
+	return p.deleteCredentialsError
+}
+
 func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 	db, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "tunnelbox.db"))
 	if err != nil {
@@ -165,7 +177,7 @@ func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 	}
 	services := service.NewUseCase(store.Services(), "default")
 	item, err := services.Create(context.Background(), service.CreateInput{
-		Name: "Demo", Hostname: "demo.example.com", OriginURL: "http://127.0.0.1:8080",
+		Name: "Demo", Mode: service.ModePublic, Hostname: "demo.example.com", OriginURL: "http://127.0.0.1:8080",
 		AllowType: service.AllowEmail, AllowValue: "user@example.com",
 	})
 	if err != nil {
@@ -175,7 +187,7 @@ func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 	var calls []string
 	var policyIDs []string
 	operations := operation.NewManager(store.Operations())
-	deployer, err := NewDeployer(services, operations, recordingTunnel{calls: &calls}, recordingAccess{calls: &calls, policyIDs: &policyIDs}, recordingDNS{&calls}, recordingConnector{calls: &calls}, recordingOrigin{&calls})
+	deployer, err := NewDeployer(services, operations, recordingTunnel{calls: &calls}, recordingAccess{calls: &calls, policyIDs: &policyIDs}, recordingDNS{calls: &calls}, recordingConnector{calls: &calls}, recordingOrigin{&calls})
 	if err != nil {
 		t.Fatalf("new deployer: %v", err)
 	}
@@ -202,7 +214,7 @@ func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	expected := []string{"origin", "tunnel", "route", "connector", "health", "application", "policy", "application", "dns"}
+	expected := []string{"origin", "zone_validation", "tunnel", "route", "connector", "health", "application", "policy", "application", "dns"}
 	if !reflect.DeepEqual(calls, expected) {
 		t.Fatalf("calls = %v, want %v", calls, expected)
 	}
@@ -366,7 +378,7 @@ func TestDeployerDeletesManagedServiceAndKeepsOperationHistory(t *testing.T) {
 	if current.Status != operation.StatusSucceeded {
 		t.Fatalf("delete operation = %+v", current)
 	}
-	wantCalls := []string{"stop", "dns_delete", "policy_delete", "application_delete", "tunnel_delete"}
+	wantCalls := []string{"stop", "dns_delete", "policy_delete", "application_delete", "tunnel_delete", "credentials_delete"}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("delete calls = %v, want %v", calls, wantCalls)
 	}
@@ -400,8 +412,64 @@ func TestDeployerDeletesDraftLocallyWithoutStartingOperation(t *testing.T) {
 	if _, err := services.Get(context.Background(), item.ID); !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("draft lookup after delete = %v, want not found", err)
 	}
-	if len(calls) != 0 {
-		t.Fatalf("draft delete started connector calls: %v", calls)
+	if !reflect.DeepEqual(calls, []string{"credentials_delete"}) {
+		t.Fatalf("draft delete calls = %v", calls)
+	}
+}
+
+func TestDeployerCredentialDeleteFailureKeepsServiceAndCanRetry(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Public app", Mode: service.ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: service.AllowEmail, AllowValue: "user@example.com",
+	})
+	defer db.Close()
+	refs := service.RemoteRefs{TunnelID: "tun_1", DNSRecordID: "dns_1", AccessApplicationID: "app_1", AccessPolicyID: "policy_1"}
+	if err := services.SetRemoteRefs(context.Background(), item.ID, refs); err != nil {
+		t.Fatalf("set remote refs: %v", err)
+	}
+	if err := services.SetState(context.Background(), item.ID, service.StateStopped); err != nil {
+		t.Fatalf("set stopped state: %v", err)
+	}
+
+	var calls []string
+	deployer, err := NewDeployer(services, operations,
+		cleanupTunnel{recordingTunnel: recordingTunnel{calls: &calls}},
+		cleanupAccess{recordingAccess: recordingAccess{calls: &calls}},
+		cleanupDNS{recordingDNS: recordingDNS{calls: &calls}},
+		recordingConnector{calls: &calls, deleteCredentialsError: errors.New("read-only filesystem")}, nil)
+	if err != nil {
+		t.Fatalf("new deployer: %v", err)
+	}
+	op, err := deployer.Delete(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start delete: %v", err)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusFailed || current.ErrorCode != "connector_token_delete_failed" {
+		t.Fatalf("failed delete operation = %+v", current)
+	}
+	loaded, err := services.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("service was removed after credential failure: %v", err)
+	}
+	if loaded.State != service.StateError || hasCloudflareRefs(loaded.RemoteRefs) {
+		t.Fatalf("service after credential failure = %+v", loaded)
+	}
+
+	retryOperations := operation.NewManager(sqlite.NewStore(db).Operations())
+	retry, err := NewDeployer(services, retryOperations, nil, nil, nil, recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new retry deployer: %v", err)
+	}
+	retryOp, err := retry.Delete(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("retry delete: %v", err)
+	}
+	if current = waitForOperation(t, retryOperations, retryOp.ID); current.Status != operation.StatusSucceeded {
+		t.Fatalf("retry operation = %+v", current)
+	}
+	if _, err := services.Get(context.Background(), item.ID); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("service after retry = %v, want not found", err)
 	}
 }
 
@@ -546,6 +614,39 @@ func TestDeployerPublicRequiresDNSAdapter(t *testing.T) {
 	}
 	if len(calls) != 0 {
 		t.Fatalf("adapters were called before dependency check: %v", calls)
+	}
+}
+
+func TestDeployerRejectsPublicHostnameBeforeCreatingRemoteResources(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Public app", Mode: service.ModePublic, Hostname: "notexample.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: service.AllowEmail, AllowValue: "user@example.com",
+	})
+	defer db.Close()
+
+	var calls []string
+	deployer, err := NewDeployer(services, operations, recordingTunnel{calls: &calls}, recordingAccess{calls: &calls},
+		recordingDNS{calls: &calls, validationError: errors.New("outside zone")}, recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new public deployer: %v", err)
+	}
+	op, err := deployer.Deploy(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start public deploy: %v", err)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusFailed || current.ErrorCode != "hostname_not_in_zone" {
+		t.Fatalf("public operation = %+v", current)
+	}
+	if !reflect.DeepEqual(calls, []string{"zone_validation"}) {
+		t.Fatalf("calls before hostname rejection = %v", calls)
+	}
+	loaded, err := services.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("load rejected service: %v", err)
+	}
+	if loaded.State != service.StateError || hasCloudflareRefs(loaded.RemoteRefs) {
+		t.Fatalf("service after hostname rejection = %+v", loaded)
 	}
 }
 

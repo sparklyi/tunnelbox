@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,12 +23,19 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-type testAuthRepository struct{ sessions map[string]time.Time }
-
-func (r *testAuthRepository) PasswordHash(context.Context) ([]byte, error) {
-	return bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+type testAuthRepository struct {
+	hash     []byte
+	sessions map[string]time.Time
 }
-func (r *testAuthRepository) SavePasswordHash(context.Context, []byte) error { return nil }
+
+func (r *testAuthRepository) PasswordHash(context.Context) ([]byte, error) { return r.hash, nil }
+func (r *testAuthRepository) SavePasswordHash(_ context.Context, hash []byte) error {
+	if len(r.hash) > 0 {
+		return auth.ErrAlreadySetup
+	}
+	r.hash = hash
+	return nil
+}
 func (r *testAuthRepository) CreateSession(_ context.Context, token string, expires time.Time) error {
 	r.sessions[token] = expires
 	return nil
@@ -38,8 +48,150 @@ func (r *testAuthRepository) DeleteSession(_ context.Context, token string) erro
 	delete(r.sessions, token)
 	return nil
 }
+func (r *testAuthRepository) DeleteExpiredSessions(_ context.Context, now time.Time) error {
+	for token, expires := range r.sessions {
+		if !expires.After(now) {
+			delete(r.sessions, token)
+		}
+	}
+	return nil
+}
 func testAuth(t *testing.T) *auth.Manager {
-	return auth.NewManager(&testAuthRepository{sessions: map[string]time.Time{}})
+	t.Helper()
+	hash, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash test password: %v", err)
+	}
+	return auth.NewManager(&testAuthRepository{hash: hash, sessions: map[string]time.Time{}})
+}
+
+func TestRouterUsesConsistentSecureSessionCookies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("setup", func(t *testing.T) {
+		manager := auth.NewManager(&testAuthRepository{sessions: map[string]time.Time{}})
+		router := newTestRouter(t, manager, true)
+		response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/setup", `{"password":"password123"}`, nil)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		assertSessionCookie(t, response, true, false)
+	})
+
+	t.Run("login", func(t *testing.T) {
+		manager := testAuth(t)
+		router := newTestRouter(t, manager, true)
+		response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/login", `{"password":"password123"}`, nil)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		assertSessionCookie(t, response, true, false)
+	})
+
+	t.Run("logout", func(t *testing.T) {
+		manager := testAuth(t)
+		router := newTestRouter(t, manager, true)
+		token, err := manager.Login(context.Background(), "password123")
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/logout", "", &http.Cookie{Name: auth.SessionCookie, Value: token})
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		assertSessionCookie(t, response, true, true)
+	})
+
+	t.Run("logout requires session", func(t *testing.T) {
+		response := performJSONRequest(newTestRouter(t, testAuth(t), true), http.MethodPost, "/api/v1/auth/logout", "", nil)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+	})
+}
+
+func TestRouterRejectsInvalidJSONBodies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newTestRouter(t, testAuth(t), false)
+	tests := []struct {
+		name   string
+		body   string
+		status int
+		code   string
+	}{
+		{name: "unknown field", body: `{"password":"password123","extra":true}`, status: http.StatusBadRequest, code: "invalid_json"},
+		{name: "extra object", body: `{"password":"password123"}{}`, status: http.StatusBadRequest, code: "invalid_json"},
+		{name: "too large", body: `{"password":"` + strings.Repeat("x", int(maxJSONBodyBytes)) + `"}`, status: http.StatusRequestEntityTooLarge, code: "request_too_large"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := performJSONRequest(router, http.MethodPost, "/api/v1/auth/login", tt.body, nil)
+			if response.Code != tt.status || !strings.Contains(response.Body.String(), `"code":"`+tt.code+`"`) {
+				t.Fatalf("response = %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestRouterRateLimitsAuthenticationByDirectPeer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newTestRouter(t, testAuth(t), false)
+	for attempt := 1; attempt <= 6; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"wrong-password"}`))
+		request.RemoteAddr = "198.51.100.10:1234"
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d", attempt))
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if attempt <= 5 && response.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, body = %s", attempt, response.Code, response.Body.String())
+		}
+		if attempt == 6 && (response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"code":"rate_limited"`)) {
+			t.Fatalf("rate-limited response = %d %s", response.Code, response.Body.String())
+		}
+	}
+}
+
+func newTestRouter(t *testing.T, manager *auth.Manager, secure bool) http.Handler {
+	t.Helper()
+	router, err := NewRouter(Dependencies{
+		Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Auth: manager, SecureCookies: secure,
+	})
+	if err != nil {
+		t.Fatalf("new router: %v", err)
+	}
+	return router
+}
+
+func performJSONRequest(handler http.Handler, method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	if cookie != nil {
+		request.AddCookie(cookie)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func assertSessionCookie(t *testing.T, response *httptest.ResponseRecorder, secure, deleted bool) {
+	t.Helper()
+	var session *http.Cookie
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == auth.SessionCookie {
+			session = cookie
+			break
+		}
+	}
+	if session == nil {
+		t.Fatal("session cookie not set")
+	}
+	if session.Path != "/" || !session.HttpOnly || session.Secure != secure || session.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie attributes = %+v", session)
+	}
+	if deleted != (session.MaxAge < 0) {
+		t.Fatalf("cookie MaxAge = %d, deleted = %v", session.MaxAge, deleted)
+	}
 }
 func addTestCookie(t *testing.T, req *http.Request, manager *auth.Manager) {
 	token, err := manager.Login(context.Background(), "password123")
@@ -143,6 +295,60 @@ func TestRouterRequiresBearerTokenAndReturnsRequestID(t *testing.T) {
 	}
 	if body["code"] != "unauthorized" {
 		t.Fatalf("error body = %v", body)
+	}
+}
+
+func TestRouterValidatesAndPropagatesRequestID(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		valid bool
+	}{
+		{name: "safe client id", value: "client.ID_123-abc", valid: true},
+		{name: "space", value: "bad request", valid: false},
+		{name: "quote", value: `bad"request`, valid: false},
+		{name: "control", value: "bad\x01request", valid: false},
+		{name: "unicode", value: "request-编号", valid: false},
+		{name: "too long", value: strings.Repeat("a", 97), valid: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			router, err := NewRouter(Dependencies{
+				Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Auth: testAuth(t), Logger: logger,
+			})
+			if err != nil {
+				t.Fatalf("new router: %v", err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/services", nil)
+			request.Header.Set("X-Request-ID", tt.value)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+
+			responseID := response.Header().Get("X-Request-ID")
+			if !validRequestID(responseID) {
+				t.Fatalf("response request id = %q", responseID)
+			}
+			if tt.valid && responseID != tt.value {
+				t.Fatalf("response request id = %q, want %q", responseID, tt.value)
+			}
+			if !tt.valid && responseID == tt.value {
+				t.Fatalf("unsafe request id was accepted: %q", responseID)
+			}
+
+			var body map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+				t.Fatalf("decode log: %v", err)
+			}
+			if body["request_id"] != responseID || entry["request_id"] != responseID {
+				t.Fatalf("request ids differ: header=%q body=%v log=%v", responseID, body["request_id"], entry["request_id"])
+			}
+		})
 	}
 }
 

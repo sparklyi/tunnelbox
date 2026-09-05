@@ -146,24 +146,12 @@ func (u *UseCase) Get(ctx context.Context, id string) (Service, error) {
 }
 
 func (u *UseCase) Create(ctx context.Context, input CreateInput) (Service, error) {
-	mode := normalizeMode(input.Mode)
-	// Requests from the original API omitted mode but supplied a public
-	// hostname and Access condition. Keep those clients on the public path;
-	// an otherwise empty new request defaults to quick mode.
-	if strings.TrimSpace(string(input.Mode)) == "" &&
-		(strings.TrimSpace(input.Hostname) != "" || input.AllowType != "" || strings.TrimSpace(input.AllowValue) != "") {
-		mode = ModePublic
-	}
+	mode := Mode(strings.ToLower(strings.TrimSpace(string(input.Mode))))
 	name, hostname, origin, allowType, allowValue, err := normalizeAndValidate(mode, input.Name, input.Hostname, input.OriginURL, input.AllowType, input.AllowValue)
 	if err != nil {
 		return Service{}, err
 	}
 	id := newID("svc")
-	if mode == ModeQuick && hostname == "" {
-		// Keep a non-empty compatibility key for the legacy unique hostname
-		// constraint. This value is never exposed as a public address.
-		hostname = "quick-" + id + ".invalid"
-	}
 	now := u.now().UTC()
 	s := Service{
 		ID:          id,
@@ -193,9 +181,6 @@ func (u *UseCase) Update(ctx context.Context, id string, input UpdateInput) (Ser
 		return Service{}, ErrConflict
 	}
 	mode := current.Mode
-	if mode == "" {
-		mode = ModePublic
-	}
 	name, hostname, origin, allowType, allowValue := current.Name, current.Hostname, current.OriginURL, current.AllowType, current.AllowValue
 	if input.Name != nil {
 		name = *input.Name
@@ -216,28 +201,17 @@ func (u *UseCase) Update(ctx context.Context, id string, input UpdateInput) (Ser
 		allowValue = *input.AllowValue
 	}
 	currentMode := current.Mode
-	if currentMode == "" {
-		currentMode = ModePublic
-	}
-	mode = normalizeMode(mode)
+	mode = Mode(strings.ToLower(strings.TrimSpace(string(mode))))
 	if mode != currentMode && hasRemoteRefs(current.RemoteRefs) {
 		return Service{}, ErrConflict
 	}
-	// Quick services keep a legacy non-empty hostname in SQLite solely for the
-	// old NOT NULL/unique constraint. Treat that sentinel as an empty input when
-	// validating or switching modes.
-	if isQuickPlaceholder(hostname) {
-		hostname = ""
-	}
+	hostname = strings.TrimSpace(hostname)
 	name, hostname, origin, allowType, allowValue, err = normalizeAndValidate(mode, name, hostname, origin, allowType, allowValue)
 	if err != nil {
 		return Service{}, err
 	}
-	if mode == ModeQuick && hostname == "" {
-		hostname = current.Hostname
-		if hostname == "" {
-			hostname = "quick-" + current.ID + ".invalid"
-		}
+	if mode == ModeQuick {
+		hostname = ""
 	}
 	current.Name, current.Mode, current.Hostname, current.OriginURL = name, mode, hostname, origin
 	current.AllowType, current.AllowValue = allowType, allowValue
@@ -290,14 +264,6 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Field, e.Message)
 }
 
-func normalizeMode(mode Mode) Mode {
-	mode = Mode(strings.ToLower(strings.TrimSpace(string(mode))))
-	if mode == "" {
-		return ModeQuick
-	}
-	return mode
-}
-
 func normalizeAndValidate(mode Mode, name, hostname, origin string, allowType AllowType, allowValue string) (string, string, string, AllowType, string, error) {
 	if mode != ModeQuick && mode != ModePrivate && mode != ModePublic {
 		return "", "", "", "", "", &ValidationError{Field: "mode", Message: "must be quick, private or public"}
@@ -310,9 +276,6 @@ func normalizeAndValidate(mode Mode, name, hostname, origin string, allowType Al
 		return "", "", "", "", "", &ValidationError{Field: "name", Message: "must be at most 120 characters"}
 	}
 	hostname = strings.ToLower(strings.TrimSpace(hostname))
-	if isQuickPlaceholder(hostname) {
-		hostname = ""
-	}
 	switch mode {
 	case ModeQuick:
 		if hostname != "" {
@@ -385,10 +348,6 @@ func validPrivateIP(value string) bool {
 		return false
 	}
 	return !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsMulticast() && !ip.IsLinkLocalUnicast()
-}
-
-func isQuickPlaceholder(value string) bool {
-	return strings.HasPrefix(value, "quick-svc_") && strings.HasSuffix(value, ".invalid")
 }
 
 func newID(prefix string) string {

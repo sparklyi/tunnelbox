@@ -15,6 +15,8 @@ import (
 	"github.com/sparklyi/tunnelbox/internal/service"
 )
 
+const maxJSONBodyBytes int64 = 1 << 20
+
 type authRequest struct {
 	Password string `json:"password"`
 }
@@ -34,10 +36,15 @@ func authStatusHandler(manager *auth.Manager) gin.HandlerFunc {
 	}
 }
 
-func authSetupHandler(manager *auth.Manager) gin.HandlerFunc {
+func authSetupHandler(manager *auth.Manager, secure bool, limiter *authAttemptLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request authRequest
 		if !decodeJSON(c, &request) {
+			return
+		}
+		source := requestSourceIP(c.Request)
+		if !limiter.Allow(source) {
+			writeError(c, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
 			return
 		}
 		token, err := manager.Setup(c.Request.Context(), request.Password)
@@ -45,15 +52,21 @@ func authSetupHandler(manager *auth.Manager) gin.HandlerFunc {
 			writeAuthError(c, err)
 			return
 		}
-		setSessionCookie(c, token)
+		limiter.Reset(source)
+		setSessionCookie(c, token, secure)
 		c.Status(http.StatusNoContent)
 	}
 }
 
-func authLoginHandler(manager *auth.Manager) gin.HandlerFunc {
+func authLoginHandler(manager *auth.Manager, secure bool, limiter *authAttemptLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request authRequest
 		if !decodeJSON(c, &request) {
+			return
+		}
+		source := requestSourceIP(c.Request)
+		if !limiter.Allow(source) {
+			writeError(c, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
 			return
 		}
 		token, err := manager.Login(c.Request.Context(), request.Password)
@@ -61,25 +74,26 @@ func authLoginHandler(manager *auth.Manager) gin.HandlerFunc {
 			writeAuthError(c, err)
 			return
 		}
-		setSessionCookie(c, token)
+		limiter.Reset(source)
+		setSessionCookie(c, token, secure)
 		c.Status(http.StatusNoContent)
 	}
 }
 
-func authLogoutHandler(manager *auth.Manager) gin.HandlerFunc {
+func authLogoutHandler(manager *auth.Manager, secure bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token, _ := c.Cookie(auth.SessionCookie)
 		if err := manager.Logout(c.Request.Context(), token); err != nil {
 			writeError(c, http.StatusInternalServerError, "internal_error", "logout failed")
 			return
 		}
-		http.SetCookie(c.Writer, &http.Cookie{Name: auth.SessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+		http.SetCookie(c.Writer, &http.Cookie{Name: auth.SessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
 		c.Status(http.StatusNoContent)
 	}
 }
 
-func setSessionCookie(c *gin.Context, token string) {
-	http.SetCookie(c.Writer, &http.Cookie{Name: auth.SessionCookie, Value: token, Path: "/", MaxAge: 30 * 24 * 60 * 60, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+func setSessionCookie(c *gin.Context, token string, secure bool) {
+	http.SetCookie(c.Writer, &http.Cookie{Name: auth.SessionCookie, Value: token, Path: "/", MaxAge: 30 * 24 * 60 * 60, HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
 }
 
 func writeAuthError(c *gin.Context, err error) {
@@ -377,14 +391,25 @@ func getOperationHandler(reader OperationReader) gin.HandlerFunc {
 }
 
 func decodeJSON(c *gin.Context, target any) bool {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxJSONBodyBytes)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(c, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
+			return false
+		}
 		writeError(c, http.StatusBadRequest, "invalid_json", "request body is invalid")
 		return false
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(c, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
+			return false
+		}
 		writeError(c, http.StatusBadRequest, "invalid_json", "request body must contain one JSON object")
 		return false
 	}
@@ -393,13 +418,8 @@ func decodeJSON(c *gin.Context, target any) bool {
 
 func makeServiceResponse(item service.Service) serviceResponse {
 	mode := item.Mode
-	if mode == "" {
-		mode = service.ModePublic
-	}
 	hostname := item.Hostname
 	if mode == service.ModeQuick {
-		// The repository keeps a compatibility key for the legacy NOT NULL/
-		// unique hostname columns. It is not a user-facing address.
 		hostname = ""
 	}
 	return serviceResponse{
@@ -483,7 +503,7 @@ func statusForCode(code string) int {
 	switch code {
 	case "cloudflare_configuration_invalid", "cloudflare_zone_not_available", "cloudflare_token_inactive":
 		return http.StatusBadRequest
-	case "invalid_mode", "private_target_invalid", "cloudflare_zone_required":
+	case "invalid_mode", "private_target_invalid", "cloudflare_zone_required", "hostname_not_in_zone":
 		return http.StatusBadRequest
 	case "cloudflare_not_configured", "connector_not_running":
 		return http.StatusConflict
@@ -509,6 +529,8 @@ func messageForCode(code string) string {
 		return "the selected Cloudflare zone is not available"
 	case "cloudflare_zone_required":
 		return "a Cloudflare zone is required for public mode"
+	case "hostname_not_in_zone":
+		return "hostname does not belong to the selected Cloudflare zone"
 	case "cloudflare_token_inactive":
 		return "the Cloudflare API token is not active"
 	case "cloudflare_token_path_unconfigured":
@@ -531,6 +553,8 @@ func messageForCode(code string) string {
 		return "connector did not become healthy"
 	case "connector_stop_failed":
 		return "cloudflared could not be stopped"
+	case "connector_token_delete_failed":
+		return "connector credentials could not be deleted"
 	case "dns_delete_failed":
 		return "DNS CNAME could not be deleted"
 	case "access_policy_delete_failed":

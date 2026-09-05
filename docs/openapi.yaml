@@ -5,17 +5,20 @@ info:
   description: Local control plane for quickly exposing internal HTTP/HTTPS origins. Quick needs no Cloudflare account or public domain; Private uses WARP and Access without a domain; Public uses a zone hostname, DNS, and Access.
 servers:
   - url: http://127.0.0.1:8080
-security: []
+security:
+  - sessionCookie: []
 paths:
   /healthz:
     get:
       security: []
+      summary: Check process health
       responses:
         '200':
           description: Process is alive.
   /readyz:
     get:
       security: []
+      summary: Check storage readiness
       responses:
         '200': { description: Storage is ready. }
         '503': { $ref: '#/components/responses/Error' }
@@ -60,7 +63,6 @@ paths:
         '401': { $ref: '#/components/responses/Error' }
   /api/v1/auth/logout:
     post:
-      security: []
       summary: Log out and invalidate the current session
       responses:
         '204': { description: Session cookie cleared. }
@@ -252,7 +254,7 @@ components:
       required: [password]
       properties:
         password: { type: string, format: password, writeOnly: true, minLength: 8, maxLength: 256 }
-
+    CloudflareConfigureRequest:
       type: object
       required: [account_id, token]
       properties:
@@ -292,9 +294,9 @@ components:
         message: { type: string }
     ServiceInput:
       type: object
-      required: [name, origin_url]
+      required: [mode, name, origin_url]
       description: >-
-        Mode-specific service input. Quick (the default) needs only name and origin_url.
+        Mode-specific service input. Quick needs only mode, name and origin_url.
         Private uses hostname as a private IP and requires an Access allow condition.
         Public uses hostname as a zone hostname and requires an Access allow condition.
       properties:
@@ -302,7 +304,6 @@ components:
         mode:
           type: string
           enum: [quick, private, public]
-          default: quick
         hostname:
           type: string
           description: Private IP for Private mode, or full DNS hostname for Public mode. Omit for Quick.

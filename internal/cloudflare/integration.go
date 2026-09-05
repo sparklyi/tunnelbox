@@ -126,13 +126,14 @@ func (i *Integration) Status(ctx context.Context) (IntegrationStatus, error) {
 	}
 	tokenStatus, err := client.VerifyToken(ctx)
 	if err != nil {
+		status.Configured = false
 		status.LastError = "cloudflare token verification failed"
 		i.mu.Lock()
 		i.status = status
 		i.mu.Unlock()
 		return status, nil
 	}
-	status.Configured = true
+	status.Configured = tokenStatus.Status == "active"
 	status.TokenID = tokenStatus.ID
 	status.TokenState = tokenStatus.Status
 	status.LastError = ""
@@ -238,6 +239,14 @@ func (i *Integration) EnsureCNAME(ctx context.Context, spec provision.CNAMESpec)
 		return provision.RemoteRef{}, err
 	}
 	return client.EnsureCNAME(ctx, spec)
+}
+
+func (i *Integration) ValidateHostname(ctx context.Context, hostname string) error {
+	client, err := i.current()
+	if err != nil {
+		return err
+	}
+	return client.ValidateHostname(ctx, hostname)
 }
 
 func (i *Integration) DeleteCNAME(ctx context.Context, id string) error {

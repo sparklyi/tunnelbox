@@ -2,6 +2,7 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -57,29 +58,27 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("build connector runtime: %w", err)
 	}
+	defer func() {
+		if err := operations.Shutdown(context.Background()); err != nil {
+			logger.Error("operation manager shutdown failed", "error", err)
+		}
+		if err := connectors.Close(context.Background()); err != nil {
+			logger.Error("connector runtime shutdown failed", "error", err)
+		}
+	}()
 	deployer, err := provision.NewDeployer(services, operations, integration, integration, integration, connectors, probe.NewOrigin(nil))
 	if err != nil {
-		_ = connectors.Close(context.Background())
 		return fmt.Errorf("build deployer: %w", err)
 	}
 	if err := services.ReconcileQuickServices(ctx); err != nil {
-		_ = connectors.Close(context.Background())
 		return fmt.Errorf("reconcile quick services: %w", err)
 	}
 	if err := operations.Recover(ctx, deployer.Resume); err != nil {
-		_ = connectors.Close(context.Background())
 		return fmt.Errorf("recover operations: %w", err)
 	}
-	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if closeErr := connectors.Close(shutdownCtx); closeErr != nil {
-			logger.Error("connector runtime shutdown failed", "error", closeErr)
-		}
-	}()
 	router, err := httpapi.NewRouter(httpapi.Dependencies{
 		Services: services, Operations: operations, Deployer: deployer, Stopper: deployer, Deleter: deployer, Cloudflare: integration,
-		Connectors: connectors, Auth: authentication, Logger: logger,
+		Connectors: connectors, Auth: authentication, SecureCookies: cfg.SecureCookies, Logger: logger,
 		Readiness: db.PingContext, WebDir: cfg.WebDir,
 	})
 	if err != nil {
@@ -95,18 +94,24 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if shutdownErr := server.Shutdown(shutdownCtx); shutdownErr != nil {
-			logger.Error("http server shutdown failed", "error", shutdownErr)
-		}
-	}()
-
 	logger.Info("tunnelbox listening", "address", cfg.ListenAddress, "database", cfg.DatabasePath)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("serve: %w", err)
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- server.ListenAndServe()
+	}()
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serve: %w", err)
+		}
+	case <-ctx.Done():
+		if err := server.Shutdown(context.Background()); err != nil {
+			logger.Error("http server shutdown failed", "error", err)
+			_ = server.Close()
+		}
+		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serve: %w", err)
+		}
 	}
 	return nil
 }

@@ -28,8 +28,8 @@ control. Use `public` only when you own the target Cloudflare zone.
 - Create Cloudflare Access Allow policies for an email or email domain.
 - Track asynchronous deployments and resume incomplete operations after a restart.
 - Stop a running Connector without deleting its Cloudflare resources, then deploy it again later.
-- Store local state in SQLite; Cloudflare API Tokens are written only to an owner-only
-  (`0600`) Secret file.
+- Store local state in SQLite; Cloudflare API and managed Connector Tokens are written
+  only to owner-only (`0600`) Secret files.
 
 The MVP supports Web origins only. SSH, TCP, RDP, independent remote Connectors, and
 unmanaged remote resources are out of scope.
@@ -43,9 +43,10 @@ docker compose -f deploy/docker-compose.yml up --build -d
 ```
 
 Open <http://127.0.0.1:8080> and create an administrator password on first use. The
-console keeps a secure, persistent session cookie after login. The example exposes the
-control plane on loopback, persists SQLite, Connector state, and Secrets in the
-`tunnelbox-data` volume, and includes `cloudflared` in the image.
+console keeps an HttpOnly, SameSite=Lax persistent session cookie after login. The
+example exposes the control plane on loopback, persists SQLite, Connector state, and
+Secrets in the `tunnelbox-data` volume, and includes a digest-pinned `cloudflared`
+binary in the image.
 
 ### From source
 
@@ -57,10 +58,10 @@ cd ..
 go run ./cmd/tunnelbox
 ```
 
-Open <http://127.0.0.1:8080> and create an administrator password on first use. Subsequent
-visits use a secure, persistent session cookie. For a LAN or public bind, protect the
-endpoint with a reverse proxy or network policy; the application itself uses the same
-password login.
+Open <http://127.0.0.1:8080> and create an administrator password on first use. For a LAN
+or public bind, protect the endpoint with a reverse proxy or network policy; the
+application itself uses the same password login. Set `TUNNELBOX_COOKIE_SECURE=true` when
+the browser reaches TunnelBox through HTTPS.
 
 ## First deployment
 
@@ -78,7 +79,7 @@ password login.
    Cloudflare configuration. Saving the connection validates the token first.
 4. Enter the service name and Origin URL. Private uses the Origin host's private IP;
    Public uses a full hostname in the selected zone; Quick needs neither hostname nor
-   Allow condition.
+   Allow condition and stores an empty hostname.
 5. Deploy and follow the operation panel. Repeated deployments reuse stored remote IDs.
 6. Verify the mode-specific entry: open the Quick URL, use WARP for the Private IP, or
    open the Public hostname and complete the Access login.
@@ -89,9 +90,10 @@ Connector and keeps the Tunnel, Access policy, DNS record, and service settings.
 
 To remove a service, click **Delete** and confirm. A draft or stopped service with no
 remote references is removed immediately. A managed service first stops its Connector,
-then removes only the Cloudflare resources recorded for that service, and finally removes
-the local record. The operation panel reports each cleanup step; failed cleanup keeps the
-service and remaining IDs so you can retry after fixing the credentials or permissions.
+then removes only the Cloudflare resources recorded for that service, deletes its local
+Connector Token file, and finally removes the local record. The operation panel reports
+each cleanup step; failed cleanup keeps the service and remaining IDs so you can retry
+after fixing the credentials, file permissions, or Cloudflare permissions.
 
 Private is not a public DNS entry. Complete Zero Trust enrollment and configure
 [Split Tunnels](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/configure/route-traffic/split-tunnels/) so the target private IP is sent through WARP.
@@ -115,6 +117,7 @@ All settings are environment variables; the defaults are suitable for a local ch
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TUNNELBOX_LISTEN` | `127.0.0.1:8080` | HTTP bind address |
+| `TUNNELBOX_COOKIE_SECURE` | `false` | Set the session Cookie `Secure` attribute; enable when browsers connect over HTTPS |
 | `TUNNELBOX_DATABASE` | `data/tunnelbox.db` | SQLite file |
 | `TUNNELBOX_CLOUDFLARE_TOKEN_FILE` | `data/cloudflare.token` | Cloudflare API Token file |
 | `TUNNELBOX_CLOUDFLARED_BINARY` | `cloudflared` | Connector executable |
@@ -124,12 +127,21 @@ All settings are environment variables; the defaults are suitable for a local ch
 `TUNNELBOX_WORKSPACE_ID` and `TUNNELBOX_WORKSPACE_NAME` can override the default
 Workspace (`default` and `Default`).
 
+TunnelBox supports only the current SQLite schema and contains no migration chain. At
+startup, a database with a non-current schema version is deleted together with its WAL
+and SHM sidecars and replaced by an empty current-schema database. Back up required data
+before upgrading. New and already-current databases open normally.
+
+The Docker build copies `cloudflared` from an upstream image pinned by digest rather than
+from a floating version tag.
+
 ## API and development
 
 See [`docs/openapi.yaml`](docs/openapi.yaml) for the complete API contract. Deployment
 returns `202 Accepted`; poll `/api/v1/operations/:id` for progress. Authenticate by first
 calling `/api/v1/auth/setup` (first run) or `/api/v1/auth/login`; the server sets an
-HttpOnly session cookie.
+HttpOnly, SameSite=Lax session cookie and applies its `Secure` attribute from
+`TUNNELBOX_COOKIE_SECURE`.
 
 ```sh
 curl -X POST http://127.0.0.1:8080/api/v1/services \

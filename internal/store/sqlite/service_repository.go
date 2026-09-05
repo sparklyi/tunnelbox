@@ -59,7 +59,7 @@ func (s *ServiceRepository) Create(ctx context.Context, item service.Service) er
 			id, workspace_id, name, mode, hostname, origin_url, allow_type, allow_value, state,
 			tunnel_id, private_route_id, dns_record_id, access_application_id, access_policy_id, public_url, created_at, updated_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.WorkspaceID, item.Name, storedMode(item.Mode), item.Hostname, item.OriginURL, item.AllowType,
+		item.ID, item.WorkspaceID, item.Name, item.Mode, item.Hostname, item.OriginURL, item.AllowType,
 		item.AllowValue, item.State, item.TunnelID, item.PrivateRouteID, item.DNSRecordID, item.AccessApplicationID,
 		item.AccessPolicyID, item.PublicURL, item.CreatedAt.UTC().Format(time.RFC3339Nano), item.UpdatedAt.UTC().Format(time.RFC3339Nano))
 	if err != nil {
@@ -76,7 +76,7 @@ func (s *ServiceRepository) Update(ctx context.Context, item service.Service) er
 		UPDATE service
 		SET name = ?, mode = ?, hostname = ?, origin_url = ?, allow_type = ?, allow_value = ?, updated_at = ?
 		WHERE workspace_id = ? AND id = ?`,
-		item.Name, storedMode(item.Mode), item.Hostname, item.OriginURL, item.AllowType, item.AllowValue,
+		item.Name, item.Mode, item.Hostname, item.OriginURL, item.AllowType, item.AllowValue,
 		item.UpdatedAt.UTC().Format(time.RFC3339Nano), item.WorkspaceID, item.ID)
 	if err != nil {
 		if isConstraintError(err) {
@@ -146,7 +146,7 @@ func scanService(row scanner) (service.Service, error) {
 	if err != nil {
 		return service.Service{}, err
 	}
-	item.Mode = storedMode(service.Mode(mode))
+	item.Mode = service.Mode(mode)
 	item.AllowType = service.AllowType(allowType)
 	item.State = service.State(state)
 	item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
@@ -158,11 +158,4 @@ func scanService(row scanner) (service.Service, error) {
 		return service.Service{}, fmt.Errorf("parse updated_at: %w", err)
 	}
 	return item, nil
-}
-
-func storedMode(mode service.Mode) service.Mode {
-	if mode == "" {
-		return service.ModePublic
-	}
-	return mode
 }

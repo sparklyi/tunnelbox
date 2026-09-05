@@ -1,139 +1,31 @@
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import {
-  ArrowRight,
   Check,
   ChevronDown,
   CircleAlert,
   CircleHelp,
   Cloud,
-  ExternalLink,
-  LoaderCircle,
   LockKeyhole,
   Plus,
-  Power,
   RefreshCw,
-  Save,
   Settings2,
-  TerminalSquare,
-  Trash2,
   X,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-
-type ServiceState = "draft" | "deploying" | "stopping" | "active" | "stopped" | "error";
-type AllowType = "email" | "email_domain";
-type ExposureMode = "quick" | "private" | "public";
-type TokenState = "idle" | "checking" | "connected" | "invalid";
-
-type Service = {
-  id: string;
-  name: string;
-  mode?: ExposureMode;
-  hostname?: string;
-  origin_url: string;
-  allow_type?: AllowType;
-  allow_value?: string;
-  state: ServiceState;
-  tunnel_id?: string;
-  private_route_id?: string;
-  dns_record_id?: string;
-  access_application_id?: string;
-  access_policy_id?: string;
-  public_url?: string;
-  created_at: string;
-  updated_at: string;
-};
-
-type Operation = {
-  operation_id: string;
-  service_id: string;
-  kind: string;
-  status: "pending" | "running" | "succeeded" | "failed" | "unknown";
-  current_step?: string;
-  attempts: number;
-  error_code?: string;
-  error_message?: string;
-  created_at: string;
-  updated_at: string;
-};
-
-type IntegrationStatus = {
-  configured: boolean;
-  account_id?: string;
-  zone_id?: string;
-  token_id?: string;
-  token_state?: string;
-  last_error?: string;
-};
-
-type Zone = { id: string; name: string };
-type Connector = { service_id: string; mode?: string; running: boolean; healthy: boolean; url?: string; message?: string };
-
-type ServiceForm = {
-  mode: ExposureMode;
-  name: string;
-  hostname: string;
-  origin_url: string;
-  allow_type: AllowType | "";
-  allow_value: string;
-};
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiError, request } from "./api/client";
+import type { AuthState, Connector, IntegrationStatus, Operation, Service, Zone } from "./api/types";
+import { AuthScreen } from "./components/AuthScreen";
+import { DeleteDialog } from "./components/DeleteDialog";
+import { GuideDialog } from "./components/GuideDialog";
+import { IntegrationDialog } from "./components/IntegrationDialog";
+import { OperationPanel } from "./components/OperationPanel";
+import { ServiceDialog } from "./components/ServiceDialog";
+import { ServiceTable } from "./components/ServiceTable";
+import { Spinner } from "./components/Spinner";
+import { useOperationPolling } from "./hooks/useOperationPolling";
+import { formatTime } from "./presentation";
 
 const emptyIntegration: IntegrationStatus = { configured: false };
-const emptyServiceForm: ServiceForm = {
-  mode: "quick",
-  name: "",
-  hostname: "",
-  origin_url: "http://",
-  allow_type: "",
-  allow_value: "",
-};
-
-const modeOptions: Array<{ value: ExposureMode; label: string; short: string }> = [
-  { value: "quick", label: "临时公开", short: "Quick" },
-  { value: "private", label: "私网受控", short: "Private" },
-  { value: "public", label: "自有域名", short: "Public" },
-];
-
-function serviceMode(item: Pick<Service, "mode" | "hostname">): ExposureMode {
-  if (item.mode === "private" || item.mode === "public" || item.mode === "quick") return item.mode;
-  return item.hostname ? "public" : "quick";
-}
-
-function modeMeta(mode: ExposureMode) {
-  switch (mode) {
-    case "private":
-      return { label: "私网受控", tone: "private" };
-    case "public":
-      return { label: "自有域名", tone: "public" };
-    default:
-      return { label: "临时公开", tone: "quick" };
-  }
-}
-
-class ApiError extends Error {
-  readonly status: number;
-  readonly code?: string;
-
-  constructor(status: number, message: string, code?: string) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    this.code = code;
-  }
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers = new Headers(init?.headers);
-  if (init?.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-  const response = await fetch(path, { ...init, headers, credentials: "include" });
-  const payload = (await response.json().catch(() => null)) as { message?: string; code?: string } | null;
-  if (!response.ok) {
-    throw new ApiError(response.status, payload?.message || "请求未完成", payload?.code);
-  }
-  return payload as T;
-}
 
 const onboardingStorageKey = "tunnelbox.onboarding.dismissed";
 
@@ -154,98 +46,8 @@ function rememberOnboardingDismissed() {
   }
 }
 
-function formatTime(value?: string) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-function stateMeta(state: ServiceState) {
-  switch (state) {
-    case "active":
-      return { label: "运行中", tone: "active" };
-    case "deploying":
-      return { label: "部署中", tone: "working" };
-    case "stopping":
-      return { label: "停止中", tone: "working" };
-    case "stopped":
-      return { label: "已停止", tone: "stopped" };
-    case "error":
-      return { label: "异常", tone: "error" };
-    default:
-      return { label: "草稿", tone: "draft" };
-  }
-}
-
-function serviceHasRemoteResources(item: Service) {
-  return Boolean(item.tunnel_id || item.private_route_id || item.dns_record_id || item.access_application_id || item.access_policy_id || item.public_url);
-}
-
-function operationMeta(status: Operation["status"]) {
-  switch (status) {
-    case "succeeded":
-      return { label: "已完成", tone: "active" };
-    case "failed":
-      return { label: "失败", tone: "error" };
-    case "unknown":
-      return { label: "待确认", tone: "working" };
-    case "running":
-      return { label: "执行中", tone: "working" };
-    default:
-      return { label: "排队中", tone: "draft" };
-  }
-}
-
-function operationLabel(kind: string) {
-  if (kind === "deploy") return "部署操作";
-  if (kind === "stop") return "停止操作";
-  if (kind === "delete") return "删除操作";
-  return "最近操作";
-}
-
-function Spinner({ size = 16 }: { size?: number }) {
-  return (
-    <motion.span className="spinner" animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 0.9, ease: "linear" }}>
-      <LoaderCircle size={size} />
-    </motion.span>
-  );
-}
-
-function AuthScreen({ state, onAuthenticated, error }: { state: "loading" | "setup" | "login" | "authenticated"; onAuthenticated: () => void; error: string }) {
-  const setup = state === "setup";
-  const [password, setPassword] = useState("");
-  const [confirmation, setConfirmation] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [message, setMessage] = useState(error);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setMessage("");
-    if (setup && password !== confirmation) { setMessage("两次输入的密码不一致"); return; }
-    setSubmitting(true);
-    try {
-      await request<void>(setup ? "/api/v1/auth/setup" : "/api/v1/auth/login", { method: "POST", body: JSON.stringify({ password }) });
-      onAuthenticated();
-    } catch (caught) {
-      setMessage(caught instanceof Error ? caught.message : "登录失败");
-    } finally { setSubmitting(false); }
-  }
-
-  if (state === "loading") return <div className="auth-shell"><Spinner size={24} /></div>;
-  return <div className="auth-shell"><motion.form className="auth-card" onSubmit={submit} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-    <img className="brand-mark" src="/assets/logo.svg" width="40" height="40" alt="" /><p className="eyebrow">TunnelBox 控制面</p>
-    <h1>{setup ? "创建管理员密码" : "欢迎回来"}</h1>
-    <p className="auth-intro">{setup ? "首次使用请设置密码，之后可直接登录控制面。" : "请输入管理员密码继续。"}</p>
-    <label>管理员密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={256} autoComplete={setup ? "new-password" : "current-password"} autoFocus required /></label>
-    {setup && <label>确认密码<input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={8} maxLength={256} autoComplete="new-password" required /></label>}
-    {(message || error) && <p className="form-error"><CircleAlert size={16} />{message || error}</p>}
-    <button type="submit" className="button button-primary auth-submit" disabled={submitting}>{submitting ? <Spinner /> : <ArrowRight size={16} />}{submitting ? "请稍候" : setup ? "创建并登录" : "登录"}</button>
-  </motion.form></div>;
-}
-
 function App() {
-  const [authState, setAuthState] = useState<"loading" | "setup" | "login" | "authenticated">("loading");
+  const [authState, setAuthState] = useState<AuthState>("loading");
   const loadGenerationRef = useRef(0);
   const [integration, setIntegration] = useState<IntegrationStatus>(emptyIntegration);
   const [zones, setZones] = useState<Zone[]>([]);
@@ -314,27 +116,7 @@ function App() {
     if (authState === "authenticated") void loadData();
   }, [authState, loadData]);
 
-  useEffect(() => {
-    if (!operation || ["succeeded", "failed", "unknown"].includes(operation.status)) return;
-    let stopped = false;
-    const timer = window.setInterval(async () => {
-      try {
-        const next = await request<Operation>(`/api/v1/operations/${operation.operation_id}`);
-        if (!stopped) {
-          setOperation(next);
-          if (["succeeded", "failed", "unknown"].includes(next.status)) {
-            await loadData(true);
-          }
-        }
-      } catch (caught) {
-        if (!stopped) setError(caught instanceof Error ? caught.message : "无法读取操作进度");
-      }
-    }, 1000);
-    return () => {
-      stopped = true;
-      window.clearInterval(timer);
-    };
-  }, [loadData, operation]);
+  useOperationPolling(operation, setOperation, loadData, setError);
 
   const activeConnectors = useMemo(() => connectors.filter((item) => item.running).length, [connectors]);
 
@@ -492,68 +274,20 @@ function App() {
             </button>
           </div>
 
-          <div className="service-table-wrap">
-            {loading ? (
-              <div className="loading-state"><Spinner size={22} /><span>正在读取服务...</span></div>
-            ) : services.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon"><TerminalSquare size={21} /></div>
-                <strong>还没有发布服务</strong>
-                <span>没有公网域名也可以从「临时公开」开始；需要权限控制时选择「私网受控」。</span>
-                <button type="button" className="button button-primary" onClick={() => setEditor("new")}><Plus size={17} />新建服务</button>
-              </div>
-            ) : (
-              <table className="service-table">
-                <thead>
-                  <tr><th>服务</th><th>模式</th><th>入口 / Origin</th><th>访问条件</th><th>状态</th><th><span className="sr-only">操作</span></th></tr>
-                </thead>
-                <tbody>
-                  <AnimatePresence initial={false}>
-                    {services.map((item) => {
-                      const state = stateMeta(item.state);
-                      const mode = serviceMode(item);
-                      const modeInfo = modeMeta(mode);
-                      const connector = connectors.find((entry) => entry.service_id === item.id);
-                      const operationActive = operation?.service_id === item.id && ["pending", "running"].includes(operation.status);
-                      const canStop = item.state === "active" || (item.state === "error" && connector?.running);
-                      const deleteBlocked = item.state === "deploying" || item.state === "stopping" || item.state === "active";
-                      const access = mode === "quick"
-                        ? "无需 Access（临时地址）"
-                        : item.allow_type === "email_domain" ? `域 · ${item.allow_value || "-"}` : item.allow_value || "-";
-                      return (
-                        <motion.tr key={item.id} layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                          <td data-label="服务"><div className="service-name"><strong>{item.name}</strong><span>{mode === "quick" ? "cloudflared 临时隧道" : mode === "private" ? "Cloudflare 私网路由" : item.hostname}</span></div></td>
-                          <td data-label="模式"><span className={`mode-badge ${modeInfo.tone}`}>{modeInfo.label}</span></td>
-                          <td data-label="入口 / Origin"><div className="endpoint-cell">
-                            {item.public_url ? <a href={item.public_url} target="_blank" rel="noreferrer">{item.public_url}<ExternalLink size={13} /></a> : <strong>{mode === "public" ? item.hostname : mode === "private" ? item.hostname : "部署后生成"}</strong>}
-                            <code>{item.origin_url}</code>
-                          </div></td>
-                          <td data-label="访问条件"><span className="access-value">{access}</span></td>
-                          <td data-label="状态"><div className="state-cell"><span className={`state-badge ${state.tone}`}><span className="status-dot" />{state.label}</span>{connector?.running && <span className="connector-note">Connector 在线</span>}</div></td>
-                          <td className="row-actions">
-                            <button type="button" className="text-button" onClick={() => setEditor(item)} disabled={item.state === "deploying" || item.state === "stopping"}>编辑</button>
-                            {canStop ? <button type="button" className="text-button stop-button" onClick={() => void stop(item)} disabled={operationActive} title="停止 Connector，保留 Cloudflare 资源"><Power size={14} />{operationActive && operation?.kind === "stop" ? "停止中" : "停止"}</button> : <button type="button" className="text-button deploy-button" onClick={() => void deploy(item)} disabled={item.state === "deploying" || item.state === "stopping" || operationActive}>{item.state === "deploying" ? "部署中" : item.state === "stopping" ? "停止中" : "部署"}</button>}
-                            <button type="button" className="text-button delete-button" onClick={() => setDeleteTarget(item)} disabled={deleteBlocked || operationActive} title={deleteBlocked ? "请先停止服务" : serviceHasRemoteResources(item) ? "删除服务及其绑定的 Cloudflare 资源" : "删除本地服务记录"}><Trash2 size={14} />删除</button>
-                          </td>
-                        </motion.tr>
-                      );
-                    })}
-                  </AnimatePresence>
-                </tbody>
-              </table>
-            )}
-          </div>
+          <ServiceTable
+            services={services}
+            connectors={connectors}
+            operation={operation}
+            loading={loading}
+            onCreate={() => setEditor("new")}
+            onEdit={setEditor}
+            onDeploy={(item) => void deploy(item)}
+            onStop={(item) => void stop(item)}
+            onDelete={setDeleteTarget}
+          />
         </section>
 
-        <AnimatePresence>
-          {operation && (
-            <motion.section className={`operation-panel ${operationMeta(operation.status).tone}`} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 12 }}>
-              <div className="operation-heading"><div><p className="eyebrow">{operationLabel(operation.kind)}</p><strong>{services.find((item) => item.id === operation.service_id)?.name || operation.service_id}</strong></div><span className={`state-badge ${operationMeta(operation.status).tone}`}><span className="status-dot" />{operationMeta(operation.status).label}</span></div>
-              <div className="operation-detail"><span>步骤：{operation.current_step || "等待开始"}</span><span>尝试 {operation.attempts}</span><code>{operation.operation_id}</code></div>
-              {operation.error_message && <p className="operation-error">{operation.error_message}</p>}
-            </motion.section>
-          )}
-        </AnimatePresence>
+        <OperationPanel operation={operation} services={services} />
 
         <footer className="page-footer"><span>{activeConnectors} 个 Connector 在线</span><span>最后更新 {formatTime(services[0]?.updated_at)}</span></footer>
       </main>
@@ -566,220 +300,6 @@ function App() {
       </AnimatePresence>
       </div>
     </MotionConfig>
-  );
-}
-
-function GuideDialog({ onClose, onQuick, onConfigure }: { onClose: () => void; onQuick: () => void; onConfigure: () => void }) {
-  return (
-    <motion.div
-      className="dialog-layer"
-      role="presentation"
-      tabIndex={-1}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
-      onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}
-    >
-      <motion.aside
-        className="dialog guide-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="guide-dialog-title"
-        aria-describedby="guide-dialog-description"
-        initial={{ x: 28, opacity: 0 }}
-        animate={{ x: 0, opacity: 1 }}
-        exit={{ x: 28, opacity: 0 }}
-        transition={{ type: "spring", stiffness: 360, damping: 32 }}
-      >
-        <div className="dialog-header">
-          <div className="guide-title-lockup">
-            <div className="guide-icon" aria-hidden="true"><CircleHelp size={20} /></div>
-            <div><p className="eyebrow">首次使用</p><h2 id="guide-dialog-title">快速开始</h2></div>
-          </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭使用指南" title="关闭使用指南"><X size={18} /></button>
-        </div>
-        <div className="guide-content">
-          <p id="guide-dialog-description" className="guide-intro">先选适合你的出口方式。没有公网域名时也能马上开始，但不同方式的访问体验和权限边界不同。</p>
-          <ol className="guide-steps">
-            <li className="guide-step">
-              <span className="guide-step-number" aria-hidden="true">1</span>
-              <div>
-                <h3>选择出口方式</h3>
-                <p><strong>临时公开</strong>不需要域名、账号或 Token，会生成随机的 trycloudflare.com 地址；<strong>私网受控</strong>不需要公网域名，但访问者要加入同一个 Zero Trust 组织、安装并登录 WARP，还要让目标 IP 经过 Split Tunnel；<strong>自有域名</strong>适合普通浏览器访问和标准 Access 登录。</p>
-                <div className="guide-links">
-                  <a href="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/" target="_blank" rel="noreferrer">Quick Tunnel 说明 <ExternalLink size={13} /></a>
-                  <a href="https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/private-net/cloudflared/connect-cidr/" target="_blank" rel="noreferrer">私网路由说明 <ExternalLink size={13} /></a>
-                  <a href="https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/configure/route-traffic/split-tunnels/" target="_blank" rel="noreferrer">Split Tunnels 配置 <ExternalLink size={13} /></a>
-                </div>
-              </div>
-            </li>
-            <li className="guide-step">
-              <span className="guide-step-number" aria-hidden="true">2</span>
-              <div>
-                <h3>按需连接 Cloudflare</h3>
-                <p>Quick 模式可以跳过连接设置。Private 只需 Account ID 和 Token；Public 还需要目标 Zone ID。Token 只会写入本机的受限 Secret 文件，不会显示在列表或响应中。</p>
-                <div className="guide-note">
-                  <strong>Public / Private 的最小权限</strong>
-                  <ul className="guide-permissions">
-                    <li>Account / Cloudflare Tunnel / Edit</li>
-                    <li>Account / Access: Apps and Policies / Edit</li>
-                    <li>Account / Zero Trust / Write</li>
-                    <li>Public 额外需要 Zone / DNS / Edit、Zone / Zone / Read</li>
-                  </ul>
-                </div>
-              </div>
-            </li>
-            <li className="guide-step">
-              <span className="guide-step-number" aria-hidden="true">3</span>
-              <div>
-                <h3>填写 Origin</h3>
-                <p>Origin URL 必须是运行 Connector 的机器可以访问的 HTTP/HTTPS 地址。Private 模式再填写同一台服务的私网 IP；Public 模式填写目标 Zone 下的主机名；Quick 模式不需要额外地址。</p>
-              </div>
-            </li>
-            <li className="guide-step">
-              <span className="guide-step-number" aria-hidden="true">4</span>
-              <div>
-                <h3>部署并验证</h3>
-                <p>点击部署后等待操作面板完成。Quick 完成后直接打开随机地址；Private 先确认设备已 enrollment 且目标 IP 已走 WARP，再用 WARP 访问私网 IP；Public 最后创建 DNS，再用普通浏览器访问并测试 Access 登录。</p>
-              </div>
-            </li>
-          </ol>
-          <p className="guide-footnote">不确定字段含义时，可以查看仓库 README 的中英文完整说明。</p>
-        </div>
-        <div className="dialog-actions guide-actions">
-          <button type="button" className="button button-secondary" onClick={onConfigure}><Settings2 size={16} />配置 Cloudflare</button>
-          <button type="button" className="button button-primary" onClick={onQuick}><ArrowRight size={16} />直接创建 Quick</button>
-        </div>
-      </motion.aside>
-    </motion.div>
-  );
-}
-
-function IntegrationDialog({ initial, zones, onClose, onSaved }: { initial: IntegrationStatus; zones: Zone[]; onClose: () => void; onSaved: (status: IntegrationStatus) => void }) {
-  const [accountID, setAccountID] = useState(initial.account_id || "");
-  const [zoneID, setZoneID] = useState(initial.zone_id || "");
-  const [secret, setSecret] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setSaving(true);
-    setError("");
-    try {
-      const status = await request<IntegrationStatus>("/api/v1/integrations/cloudflare", { method: "PUT", body: JSON.stringify({ account_id: accountID, zone_id: zoneID, token: secret }) });
-      setSecret("");
-      onSaved(status);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Cloudflare 配置失败");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <motion.div className="dialog-layer" role="presentation" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
-      <motion.aside className="dialog" role="dialog" aria-modal="true" aria-labelledby="cloudflare-dialog-title" initial={{ x: 28, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 28, opacity: 0 }} transition={{ type: "spring", stiffness: 360, damping: 32 }}>
-        <div className="dialog-header"><div><p className="eyebrow">Cloudflare</p><h2 id="cloudflare-dialog-title">连接设置</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="关闭" title="关闭"><X size={18} /></button></div>
-        <form className="dialog-form" onSubmit={submit}>
-          <label>Account ID<input value={accountID} onChange={(event) => setAccountID(event.target.value)} required /></label>
-          <label>Zone ID <span className="label-hint">Public 模式需要，Quick / Private 可留空</span>{zones.length > 0 ? <select value={zoneID} onChange={(event) => setZoneID(event.target.value)}><option value="">不选择 Zone</option>{zones.map((zone) => <option key={zone.id} value={zone.id}>{zone.name} · {zone.id}</option>)}</select> : <input value={zoneID} onChange={(event) => setZoneID(event.target.value)} placeholder="没有 Zone 时留空" />}</label>
-          <label>API Token<input type="password" value={secret} onChange={(event) => setSecret(event.target.value)} placeholder="仅本次提交使用" autoComplete="new-password" required /></label>
-          <p className="form-note">Token 至少需要 Cloudflare Tunnel Edit；Private 还需要 Access Apps and Policies Edit、Zero Trust Write，Public 另外需要 Zone DNS Edit 和 Zone Read。</p>
-          {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}
-          <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? <Spinner /> : <Save size={16} />}{saving ? "验证中" : "保存并验证"}</button></div>
-        </form>
-      </motion.aside>
-    </motion.div>
-  );
-}
-
-function DeleteDialog({ value, onClose, onConfirm }: { value: Service; onClose: () => void; onConfirm: () => void }) {
-  const hasRemote = serviceHasRemoteResources(value);
-  return (
-    <motion.div className="dialog-layer" role="presentation" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
-      <motion.aside className="dialog delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-dialog-title" aria-describedby="delete-dialog-description" initial={{ y: 16, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 16, opacity: 0 }} transition={{ type: "spring", stiffness: 360, damping: 32 }}>
-        <div className="dialog-header">
-          <div className="delete-title-lockup"><div className="delete-icon" aria-hidden="true"><Trash2 size={20} /></div><div><p className="eyebrow">删除服务</p><h2 id="delete-dialog-title">确认删除？</h2></div></div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="关闭" title="关闭"><X size={18} /></button>
-        </div>
-        <div className="delete-content">
-          <p id="delete-dialog-description">将删除「<strong>{value.name}</strong>」及其本地配置。</p>
-          {hasRemote ? <p className="delete-warning">该服务绑定了 Cloudflare 资源。确认后会停止 Connector，并删除 TunnelBox 创建的 DNS、Access、私网路由和 Tunnel。删除后无法恢复。</p> : <p className="delete-note">当前没有已绑定的远端资源，只会删除本地服务记录。</p>}
-        </div>
-        <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button type="button" className="button button-danger" onClick={onConfirm}><Trash2 size={16} />确认删除</button></div>
-      </motion.aside>
-    </motion.div>
-  );
-}
-
-function ServiceDialog({ value, onClose, onSaved }: { value: Service | null; onClose: () => void; onSaved: (service: Service) => void }) {
-  const [form, setForm] = useState<ServiceForm>(() => {
-    if (!value) return { ...emptyServiceForm };
-    const mode = serviceMode(value);
-    return {
-      mode,
-      name: value.name,
-      hostname: mode === "quick" ? "" : value.hostname || "",
-      origin_url: value.origin_url,
-      allow_type: mode === "quick" ? "" : value.allow_type || "email",
-      allow_value: mode === "quick" ? "" : value.allow_value || "",
-    };
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const update = <K extends keyof ServiceForm>(key: K, next: ServiceForm[K]) => setForm((current) => ({ ...current, [key]: next }));
-
-  function chooseMode(mode: ExposureMode) {
-    setForm((current) => ({
-      ...current,
-      mode,
-      hostname: mode === "quick" || current.mode !== mode ? "" : current.hostname,
-      allow_type: mode === "quick" ? "" : current.allow_type || "email",
-      allow_value: mode === "quick" ? "" : current.allow_value,
-    }));
-    setError("");
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    setSaving(true);
-    setError("");
-    try {
-      const payload = JSON.stringify(form);
-      const saved = await request<Service>(value ? `/api/v1/services/${value.id}` : "/api/v1/services", { method: value ? "PATCH" : "POST", body: payload });
-      onSaved(saved);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "服务保存失败");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <motion.div className="dialog-layer" role="presentation" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}>
-      <motion.aside className="dialog" role="dialog" aria-modal="true" aria-labelledby="service-dialog-title" initial={{ x: 28, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 28, opacity: 0 }} transition={{ type: "spring", stiffness: 360, damping: 32 }}>
-        <div className="dialog-header"><div><p className="eyebrow">Web 服务</p><h2 id="service-dialog-title">{value ? "编辑服务" : "新建服务"}</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label="关闭" title="关闭"><X size={18} /></button></div>
-        <form className="dialog-form" onSubmit={submit}>
-          <div className="mode-picker" role="radiogroup" aria-label="发布方式">
-            {modeOptions.map((option) => <button key={option.value} type="button" role="radio" aria-checked={form.mode === option.value} className={`mode-option ${form.mode === option.value ? "selected" : ""}`} onClick={() => chooseMode(option.value)}><strong>{option.label}</strong><span>{option.short}</span></button>)}
-          </div>
-          <div className={`mode-help ${form.mode}`}>
-            {form.mode === "quick" && <><strong>没有域名也能马上分享</strong><span>cloudflared 会生成随机的 <code>trycloudflare.com</code> 地址。该地址是临时的，不带标准 Cloudflare Access 邮箱策略。</span></>}
-            {form.mode === "private" && <><strong>不需要公网域名</strong><span>访问者需要加入同一个 Zero Trust 组织并使用 Cloudflare One Client/WARP；还要在 Split Tunnels 中让这个私网 IP 经过 WARP，Access 才会按下面的条件控制访问。</span></>}
-            {form.mode === "public" && <><strong>普通浏览器 + Access</strong><span>需要你拥有的 Cloudflare Zone。TunnelBox 会创建 DNS CNAME，并在最后启用公网入口。</span></>}
-          </div>
-          <label>名称<input value={form.name} onChange={(event) => update("name", event.target.value)} placeholder="例如 内网文档" required maxLength={120} /></label>
-          {form.mode !== "quick" && <label>{form.mode === "private" ? "私网 IP" : "公网域名"}<input value={form.hostname} onChange={(event) => update("hostname", event.target.value)} placeholder={form.mode === "private" ? "192.168.1.20" : "docs.example.com"} required /></label>}
-          <label>Origin URL <span className="label-hint">Connector 所在环境必须能访问</span><input type="url" value={form.origin_url} onChange={(event) => update("origin_url", event.target.value)} placeholder={form.mode === "private" ? "http://192.168.1.20:8080" : "http://127.0.0.1:3000"} required /></label>
-          {form.mode !== "quick" && <div className="form-grid"><label>允许条件<select value={form.allow_type || "email"} onChange={(event) => update("allow_type", event.target.value as AllowType)}><option value="email">指定邮箱</option><option value="email_domain">邮箱域名</option></select></label><label>条件值<input type={form.allow_type === "email" ? "email" : "text"} value={form.allow_value} onChange={(event) => update("allow_value", event.target.value)} placeholder={form.allow_type === "email" ? "you@example.com" : "example.com"} required /></label></div>}
-          {form.mode === "quick" && <p className="form-note">部署完成后，随机公网地址会出现在服务列表中。停止 TunnelBox 后该地址失效。</p>}
-          {error && <p className="form-error"><CircleAlert size={16} />{error}</p>}
-          <div className="dialog-actions"><button type="button" className="button button-secondary" onClick={onClose}>取消</button><button type="submit" className="button button-primary" disabled={saving}>{saving ? <Spinner /> : <Save size={16} />}{saving ? "保存中" : "保存服务"}</button></div>
-        </form>
-      </motion.aside>
-    </motion.div>
   );
 }
 

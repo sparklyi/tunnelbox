@@ -142,6 +142,7 @@ type AccessDestroyer interface {
 }
 
 type DNSPort interface {
+	ValidateHostname(context.Context, string) error
 	EnsureCNAME(context.Context, CNAMESpec) (RemoteRef, error)
 }
 
@@ -156,6 +157,7 @@ type ConnectorRuntime interface {
 	Reload(context.Context, string) error
 	Status(context.Context, string) (ConnectorStatus, error)
 	Stop(context.Context, string) error
+	DeleteCredentials(context.Context, string) error
 }
 
 type OriginChecker interface {
