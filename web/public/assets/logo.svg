@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">TunnelBox folded box</title>
+  <rect width="256" height="256" rx="28" fill="#fff"/>
+  <g fill="#20242c">
+    <path d="M18 66 125 22Q133 19 131 28L123 65 35 99 14 73Q9 68 18 66Z"/>
+    <path d="M128 65 155 36Q158 33 162 35L244 67Q251 69 246 76L219 99Z"/>
+    <path d="M24 102Q18 98 18 107V178Q18 190 27 195L105 237V147Q105 141 99 138Z"/>
+  </g>
+  <path d="M151 140 231 103Q237 100 237 107V182Q237 192 228 198L143 238V151Q143 143 151 140Z" fill="#4169e1"/>
+</svg>

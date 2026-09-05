@@ -1,5 +1,7 @@
 # TunnelBox
 
+<p><img src="web/public/assets/logo-wordmark.svg" alt="TunnelBox" width="420" /></p>
+
 [简体中文](README.zh-CN.md)
 
 TunnelBox is a small local control plane for exposing an internal HTTP/HTTPS

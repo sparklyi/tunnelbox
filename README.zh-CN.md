@@ -1,5 +1,7 @@
 # TunnelBox
 
+<p><img src="web/public/assets/logo-wordmark.svg" alt="TunnelBox" width="420" /></p>
+
 [English](README.md)
 
 TunnelBox 是一个轻量的本地控制面，用来把内网 HTTP/HTTPS 服务通过 Cloudflare

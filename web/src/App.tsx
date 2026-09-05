@@ -234,7 +234,7 @@ function AuthScreen({ state, onAuthenticated, error }: { state: "loading" | "set
 
   if (state === "loading") return <div className="auth-shell"><Spinner size={24} /></div>;
   return <div className="auth-shell"><motion.form className="auth-card" onSubmit={submit} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-    <div className="brand-mark"><TerminalSquare size={18} /></div><p className="eyebrow">TunnelBox 控制面</p>
+    <img className="brand-mark" src="/assets/logo.svg" width="40" height="40" alt="" /><p className="eyebrow">TunnelBox 控制面</p>
     <h1>{setup ? "创建管理员密码" : "欢迎回来"}</h1>
     <p className="auth-intro">{setup ? "首次使用请设置密码，之后可直接登录控制面。" : "请输入管理员密码继续。"}</p>
     <label>管理员密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={256} autoComplete={setup ? "new-password" : "current-password"} autoFocus required /></label>
@@ -408,7 +408,7 @@ function App() {
       <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true"><TerminalSquare size={18} /></div>
+          <img className="brand-mark" src="/assets/logo.svg" width="40" height="40" alt="" />
           <div>
             <strong>TunnelBox</strong>
             <span>控制面</span>
