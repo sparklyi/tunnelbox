@@ -73,8 +73,11 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if closeErr := connectors.Close(shutdownCtx); closeErr != nil {
-			logger.Error("connector runtime shutdown failed", "error", closeErr)
+		if err := operations.Shutdown(shutdownCtx); err != nil {
+			logger.Error("operation manager shutdown failed", "error", err)
+		}
+		if err := connectors.Close(shutdownCtx); err != nil {
+			logger.Error("connector runtime shutdown failed", "error", err)
 		}
 	}()
 	router, err := httpapi.NewRouter(httpapi.Dependencies{

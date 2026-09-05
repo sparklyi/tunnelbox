@@ -3,6 +3,7 @@ package operation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -137,5 +138,101 @@ func TestFailureCanMarkUnknown(t *testing.T) {
 		default:
 			time.Sleep(5 * time.Millisecond)
 		}
+	}
+}
+
+func TestShutdownCancelsAndWaitsWithoutUsingRequestContext(t *testing.T) {
+	repo := newMemoryRepository()
+	manager := NewManager(repo)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+
+	op, err := manager.Start(requestCtx, "svc_shutdown", "deploy", func(ctx context.Context, _ Operation) error {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	awaitSignal(t, started, "operation start")
+	cancelRequest()
+	select {
+	case <-canceled:
+		t.Fatal("request cancellation stopped an accepted operation")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	shutdownDone := make(chan error, 1)
+	go func() {
+		shutdownDone <- manager.Shutdown(context.Background())
+	}()
+	awaitSignal(t, canceled, "application context cancellation")
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("shutdown returned before task exit: %v", err)
+	default:
+	}
+	close(release)
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	if _, err := manager.Start(context.Background(), "svc_after", "deploy", func(context.Context, Operation) error { return nil }); !errors.Is(err, ErrClosed) {
+		t.Fatalf("start after shutdown error = %v, want %v", err, ErrClosed)
+	}
+	final, err := manager.Get(context.Background(), op.ID)
+	if err != nil {
+		t.Fatalf("read final operation: %v", err)
+	}
+	if final.Status != StatusUnknown || final.ErrorCode != "operation_canceled" || final.ErrorMessage == "" {
+		t.Fatalf("final operation = %+v", final)
+	}
+}
+
+func TestStartAndShutdownAreConcurrentSafe(t *testing.T) {
+	repo := newMemoryRepository()
+	manager := NewManager(repo)
+	start := make(chan struct{})
+	errorsByCall := make(chan error, 25)
+	var callers sync.WaitGroup
+	for index := range 24 {
+		callers.Add(1)
+		go func() {
+			defer callers.Done()
+			<-start
+			_, err := manager.Start(context.Background(), fmt.Sprintf("svc_%d", index), "deploy", func(ctx context.Context, _ Operation) error {
+				<-ctx.Done()
+				return ctx.Err()
+			})
+			errorsByCall <- err
+		}()
+	}
+	callers.Add(1)
+	go func() {
+		defer callers.Done()
+		<-start
+		errorsByCall <- manager.Shutdown(context.Background())
+	}()
+	close(start)
+	callers.Wait()
+	close(errorsByCall)
+	for err := range errorsByCall {
+		if err != nil && !errors.Is(err, ErrClosed) {
+			t.Fatalf("concurrent call error = %v", err)
+		}
+	}
+}
+
+func awaitSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", description)
 	}
 }
