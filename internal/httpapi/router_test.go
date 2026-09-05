@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -43,6 +44,14 @@ func (r *testAuthRepository) SessionValid(_ context.Context, token string, now t
 }
 func (r *testAuthRepository) DeleteSession(_ context.Context, token string) error {
 	delete(r.sessions, token)
+	return nil
+}
+func (r *testAuthRepository) DeleteExpiredSessions(_ context.Context, now time.Time) error {
+	for token, expires := range r.sessions {
+		if !expires.After(now) {
+			delete(r.sessions, token)
+		}
+	}
 	return nil
 }
 func testAuth(t *testing.T) *auth.Manager {
@@ -108,6 +117,25 @@ func TestRouterRejectsInvalidJSONBodies(t *testing.T) {
 				t.Fatalf("response = %d %s", response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+func TestRouterRateLimitsAuthenticationByDirectPeer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newTestRouter(t, testAuth(t), false)
+	for attempt := 1; attempt <= 6; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"password":"wrong-password"}`))
+		request.RemoteAddr = "198.51.100.10:1234"
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d", attempt))
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if attempt <= 5 && response.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d, body = %s", attempt, response.Code, response.Body.String())
+		}
+		if attempt == 6 && (response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), `"code":"rate_limited"`)) {
+			t.Fatalf("rate-limited response = %d %s", response.Code, response.Body.String())
+		}
 	}
 }
 

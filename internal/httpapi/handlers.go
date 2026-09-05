@@ -36,10 +36,15 @@ func authStatusHandler(manager *auth.Manager) gin.HandlerFunc {
 	}
 }
 
-func authSetupHandler(manager *auth.Manager, secure bool) gin.HandlerFunc {
+func authSetupHandler(manager *auth.Manager, secure bool, limiter *authAttemptLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request authRequest
 		if !decodeJSON(c, &request) {
+			return
+		}
+		source := requestSourceIP(c.Request)
+		if !limiter.Allow(source) {
+			writeError(c, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
 			return
 		}
 		token, err := manager.Setup(c.Request.Context(), request.Password)
@@ -47,15 +52,21 @@ func authSetupHandler(manager *auth.Manager, secure bool) gin.HandlerFunc {
 			writeAuthError(c, err)
 			return
 		}
+		limiter.Reset(source)
 		setSessionCookie(c, token, secure)
 		c.Status(http.StatusNoContent)
 	}
 }
 
-func authLoginHandler(manager *auth.Manager, secure bool) gin.HandlerFunc {
+func authLoginHandler(manager *auth.Manager, secure bool, limiter *authAttemptLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request authRequest
 		if !decodeJSON(c, &request) {
+			return
+		}
+		source := requestSourceIP(c.Request)
+		if !limiter.Allow(source) {
+			writeError(c, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
 			return
 		}
 		token, err := manager.Login(c.Request.Context(), request.Password)
@@ -63,6 +74,7 @@ func authLoginHandler(manager *auth.Manager, secure bool) gin.HandlerFunc {
 			writeAuthError(c, err)
 			return
 		}
+		limiter.Reset(source)
 		setSessionCookie(c, token, secure)
 		c.Status(http.StatusNoContent)
 	}

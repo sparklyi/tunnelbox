@@ -100,3 +100,29 @@ func TestDeletingServiceKeepsOperationHistory(t *testing.T) {
 		t.Fatalf("operation history = %+v", history)
 	}
 }
+
+func TestDeleteExpiredSessions(t *testing.T) {
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "tunnelbox.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	store := NewStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := store.CreateSession(ctx, "expired", now.Add(-time.Minute)); err != nil {
+		t.Fatalf("create expired session: %v", err)
+	}
+	if err := store.CreateSession(ctx, "current", now.Add(time.Minute)); err != nil {
+		t.Fatalf("create current session: %v", err)
+	}
+	if err := store.DeleteExpiredSessions(ctx, now); err != nil {
+		t.Fatalf("delete expired sessions: %v", err)
+	}
+	for token, wantValid := range map[string]bool{"expired": false, "current": true} {
+		valid, err := store.SessionValid(ctx, token, now)
+		if err != nil || valid != wantValid {
+			t.Fatalf("session %q valid = %v, err = %v", token, valid, err)
+		}
+	}
+}
