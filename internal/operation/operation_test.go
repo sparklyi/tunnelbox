@@ -228,6 +228,63 @@ func TestStartAndShutdownAreConcurrentSafe(t *testing.T) {
 	}
 }
 
+func TestRecoverUsesManagerLifecycle(t *testing.T) {
+	repo := newMemoryRepository()
+	now := time.Now().UTC()
+	op := Operation{ID: "op_recover", ServiceID: "svc_recover", Kind: "deploy", Status: StatusPending, CreatedAt: now, UpdatedAt: now}
+	repo.items[op.ID] = op
+	manager := NewManager(repo)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+
+	if err := manager.Recover(requestCtx, func(Operation) Task {
+		return func(ctx context.Context, _ Operation) error {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+			return ctx.Err()
+		}
+	}); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	awaitSignal(t, started, "recovered operation start")
+	cancelRequest()
+	select {
+	case <-canceled:
+		t.Fatal("request cancellation stopped a recovered operation")
+	case <-time.After(25 * time.Millisecond):
+	}
+	if err := manager.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	awaitSignal(t, canceled, "recovered operation cancellation")
+}
+
+func TestShutdownHonorsDeadline(t *testing.T) {
+	manager := NewManager(newMemoryRepository())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if _, err := manager.Start(context.Background(), "svc_deadline", "deploy", func(context.Context, Operation) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	awaitSignal(t, started, "operation start")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if err := manager.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error = %v, want deadline exceeded", err)
+	}
+	close(release)
+	if err := manager.Shutdown(context.Background()); err != nil {
+		t.Fatalf("wait for shutdown: %v", err)
+	}
+}
+
 func awaitSignal(t *testing.T, signal <-chan struct{}, description string) {
 	t.Helper()
 	select {
