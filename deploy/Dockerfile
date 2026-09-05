@@ -15,7 +15,7 @@ COPY . ./
 COPY --from=web /src/web/dist ./web/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/tunnelbox ./cmd/tunnelbox
 
-FROM cloudflare/cloudflared:latest AS cloudflared
+FROM cloudflare/cloudflared@sha256:51c9cefcb4569df44e1ad403ab1d3d8065aa8e84339bcfc6aee75502e1140339 AS cloudflared
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates \
