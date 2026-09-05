@@ -126,13 +126,14 @@ func (i *Integration) Status(ctx context.Context) (IntegrationStatus, error) {
 	}
 	tokenStatus, err := client.VerifyToken(ctx)
 	if err != nil {
+		status.Configured = false
 		status.LastError = "cloudflare token verification failed"
 		i.mu.Lock()
 		i.status = status
 		i.mu.Unlock()
 		return status, nil
 	}
-	status.Configured = true
+	status.Configured = tokenStatus.Status == "active"
 	status.TokenID = tokenStatus.ID
 	status.TokenState = tokenStatus.Status
 	status.LastError = ""
