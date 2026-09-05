@@ -236,6 +236,20 @@ func (r *Runtime) Stop(ctx context.Context, serviceID string) error {
 	}
 }
 
+func (r *Runtime) DeleteCredentials(ctx context.Context, serviceID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateServiceID(serviceID); err != nil {
+		return err
+	}
+	path := filepath.Join(r.dataDir, "tokens", serviceID+".token")
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return &Error{Code: "connector_token_delete_failed", Cause: err}
+	}
+	return nil
+}
+
 func (r *Runtime) Close(ctx context.Context) error {
 	r.cancel()
 	r.mu.Lock()
@@ -255,11 +269,8 @@ func (r *Runtime) Close(ctx context.Context) error {
 }
 
 func validateSpec(spec provision.ConnectorSpec) error {
-	if spec.ServiceID == "" {
-		return errors.New("connector service id is required")
-	}
-	if spec.ServiceID == "." || spec.ServiceID == ".." || strings.ContainsAny(spec.ServiceID, `/\\`) {
-		return errors.New("connector service id is invalid")
+	if err := validateServiceID(spec.ServiceID); err != nil {
+		return err
 	}
 	if spec.Quick {
 		u, err := url.Parse(spec.OriginURL)
@@ -270,6 +281,16 @@ func validateSpec(spec provision.ConnectorSpec) error {
 	}
 	if spec.TunnelID == "" || spec.Token == "" {
 		return errors.New("connector tunnel id and token are required")
+	}
+	return nil
+}
+
+func validateServiceID(serviceID string) error {
+	if serviceID == "" {
+		return errors.New("connector service id is required")
+	}
+	if serviceID == "." || serviceID == ".." || strings.ContainsAny(serviceID, "/\\\x00") {
+		return errors.New("connector service id is invalid")
 	}
 	return nil
 }

@@ -87,3 +87,57 @@ func TestOutputCaptureAcceptsURLSplitAcrossWrites(t *testing.T) {
 		t.Fatalf("captured URL = %q", got)
 	}
 }
+
+func TestRuntimeCreatesAndDeletesManagedCredentials(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX test executable")
+	}
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "cloudflared-fake")
+	script := "#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake cloudflared: %v", err)
+	}
+	stateDir := filepath.Join(dir, "state")
+	connectorRuntime, err := New(binary, stateDir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = connectorRuntime.Close(closeCtx)
+	}()
+
+	const serviceID = "svc_managed"
+	if err := connectorRuntime.EnsureRunning(context.Background(), provision.ConnectorSpec{
+		ServiceID: serviceID, TunnelID: "tun_1", Token: "connector-secret",
+	}); err != nil {
+		t.Fatalf("ensure managed connector: %v", err)
+	}
+	tokenPath := filepath.Join(stateDir, "tokens", serviceID+".token")
+	info, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatalf("stat token: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("token permissions = %o, want 600", info.Mode().Perm())
+	}
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := connectorRuntime.Stop(stopCtx, serviceID); err != nil {
+		t.Fatalf("stop connector: %v", err)
+	}
+	if err := connectorRuntime.DeleteCredentials(context.Background(), serviceID); err != nil {
+		t.Fatalf("delete credentials: %v", err)
+	}
+	if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {
+		t.Fatalf("token still exists after delete: %v", err)
+	}
+	if err := connectorRuntime.DeleteCredentials(context.Background(), serviceID); err != nil {
+		t.Fatalf("repeat credential delete: %v", err)
+	}
+	if err := connectorRuntime.DeleteCredentials(context.Background(), "../outside"); err == nil {
+		t.Fatal("unsafe service id unexpectedly accepted")
+	}
+}

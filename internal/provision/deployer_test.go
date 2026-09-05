@@ -124,10 +124,11 @@ func (p cleanupDNS) DeleteCNAME(context.Context, string) error {
 }
 
 type recordingConnector struct {
-	calls     *[]string
-	specs     *[]ConnectorSpec
-	status    ConnectorStatus
-	stopError error
+	calls                  *[]string
+	specs                  *[]ConnectorSpec
+	status                 ConnectorStatus
+	stopError              error
+	deleteCredentialsError error
 }
 
 func (p recordingConnector) EnsureRunning(_ context.Context, spec ConnectorSpec) error {
@@ -151,6 +152,11 @@ func (p recordingConnector) Status(context.Context, string) (ConnectorStatus, er
 func (p recordingConnector) Stop(context.Context, string) error {
 	*p.calls = append(*p.calls, "stop")
 	return p.stopError
+}
+
+func (p recordingConnector) DeleteCredentials(context.Context, string) error {
+	*p.calls = append(*p.calls, "credentials_delete")
+	return p.deleteCredentialsError
 }
 
 func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
@@ -366,7 +372,7 @@ func TestDeployerDeletesManagedServiceAndKeepsOperationHistory(t *testing.T) {
 	if current.Status != operation.StatusSucceeded {
 		t.Fatalf("delete operation = %+v", current)
 	}
-	wantCalls := []string{"stop", "dns_delete", "policy_delete", "application_delete", "tunnel_delete"}
+	wantCalls := []string{"stop", "dns_delete", "policy_delete", "application_delete", "tunnel_delete", "credentials_delete"}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("delete calls = %v, want %v", calls, wantCalls)
 	}
@@ -400,8 +406,64 @@ func TestDeployerDeletesDraftLocallyWithoutStartingOperation(t *testing.T) {
 	if _, err := services.Get(context.Background(), item.ID); !errors.Is(err, service.ErrNotFound) {
 		t.Fatalf("draft lookup after delete = %v, want not found", err)
 	}
-	if len(calls) != 0 {
-		t.Fatalf("draft delete started connector calls: %v", calls)
+	if !reflect.DeepEqual(calls, []string{"credentials_delete"}) {
+		t.Fatalf("draft delete calls = %v", calls)
+	}
+}
+
+func TestDeployerCredentialDeleteFailureKeepsServiceAndCanRetry(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Public app", Mode: service.ModePublic, Hostname: "app.example.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: service.AllowEmail, AllowValue: "user@example.com",
+	})
+	defer db.Close()
+	refs := service.RemoteRefs{TunnelID: "tun_1", DNSRecordID: "dns_1", AccessApplicationID: "app_1", AccessPolicyID: "policy_1"}
+	if err := services.SetRemoteRefs(context.Background(), item.ID, refs); err != nil {
+		t.Fatalf("set remote refs: %v", err)
+	}
+	if err := services.SetState(context.Background(), item.ID, service.StateStopped); err != nil {
+		t.Fatalf("set stopped state: %v", err)
+	}
+
+	var calls []string
+	deployer, err := NewDeployer(services, operations,
+		cleanupTunnel{recordingTunnel: recordingTunnel{calls: &calls}},
+		cleanupAccess{recordingAccess: recordingAccess{calls: &calls}},
+		cleanupDNS{recordingDNS: recordingDNS{calls: &calls}},
+		recordingConnector{calls: &calls, deleteCredentialsError: errors.New("read-only filesystem")}, nil)
+	if err != nil {
+		t.Fatalf("new deployer: %v", err)
+	}
+	op, err := deployer.Delete(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start delete: %v", err)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusFailed || current.ErrorCode != "connector_token_delete_failed" {
+		t.Fatalf("failed delete operation = %+v", current)
+	}
+	loaded, err := services.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("service was removed after credential failure: %v", err)
+	}
+	if loaded.State != service.StateError || hasCloudflareRefs(loaded.RemoteRefs) {
+		t.Fatalf("service after credential failure = %+v", loaded)
+	}
+
+	retryOperations := operation.NewManager(sqlite.NewStore(db).Operations())
+	retry, err := NewDeployer(services, retryOperations, nil, nil, nil, recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new retry deployer: %v", err)
+	}
+	retryOp, err := retry.Delete(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("retry delete: %v", err)
+	}
+	if current = waitForOperation(t, retryOperations, retryOp.ID); current.Status != operation.StatusSucceeded {
+		t.Fatalf("retry operation = %+v", current)
+	}
+	if _, err := services.Get(context.Background(), item.ID); !errors.Is(err, service.ErrNotFound) {
+		t.Fatalf("service after retry = %v, want not found", err)
 	}
 }
 

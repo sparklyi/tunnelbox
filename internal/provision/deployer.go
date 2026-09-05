@@ -71,7 +71,10 @@ func (d *Deployer) Delete(ctx context.Context, serviceID string) (operation.Oper
 	if item.State == service.StateDeploying || item.State == service.StateStopping || item.State == service.StateActive {
 		return operation.Operation{}, service.ErrConflict
 	}
-	if (item.State == service.StateDraft || item.State == service.StateStopped) && !hasCloudflareRefs(item.RemoteRefs) && item.PublicURL == "" {
+	if item.State == service.StateDraft && !hasCloudflareRefs(item.RemoteRefs) && item.PublicURL == "" {
+		if err := d.connector.DeleteCredentials(ctx, item.ID); err != nil {
+			return operation.Operation{}, adapterFailure(err, "connector_token_delete_failed", "connector credentials could not be deleted")
+		}
 		if err := d.services.Delete(ctx, serviceID); err != nil {
 			return operation.Operation{}, err
 		}
@@ -218,6 +221,12 @@ func (d *Deployer) executeDelete(ctx context.Context, op operation.Operation, it
 	if err := deleteRemote("tunnel_delete", refs.TunnelID, deleteTunnel, func(value *service.RemoteRefs) { value.TunnelID = "" }, "tunnel_delete_failed", "Cloudflare Tunnel could not be deleted"); err != nil {
 		return err
 	}
+	if err := setStep("connector_credentials_delete"); err != nil {
+		return err
+	}
+	if err := d.connector.DeleteCredentials(ctx, item.ID); err != nil {
+		return fail(err, "connector_token_delete_failed", "connector credentials could not be deleted")
+	}
 
 	if err := setStep("service_delete"); err != nil {
 		return err
@@ -298,10 +307,6 @@ func (d *Deployer) execute(ctx context.Context, op operation.Operation, item ser
 			return fail(err, "origin_unreachable", "origin cannot be reached from connector")
 		}
 	}
-	if item.Mode == "" {
-		item.Mode = service.ModePublic
-	}
-
 	// Quick tunnels are deliberately independent from the Cloudflare API. They
 	// provide a temporary share URL for development and do not create Access or
 	// DNS resources.

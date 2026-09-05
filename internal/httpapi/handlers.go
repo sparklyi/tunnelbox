@@ -539,6 +539,8 @@ func messageForCode(code string) string {
 		return "connector did not become healthy"
 	case "connector_stop_failed":
 		return "cloudflared could not be stopped"
+	case "connector_token_delete_failed":
+		return "connector credentials could not be deleted"
 	case "dns_delete_failed":
 		return "DNS CNAME could not be deleted"
 	case "access_policy_delete_failed":
