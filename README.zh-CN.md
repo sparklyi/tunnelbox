@@ -27,7 +27,8 @@ Tunnel 发布出去。它以受控方式运行 `cloudflared`，创建所需的 C
 - 为指定邮箱或邮箱域名创建 Cloudflare Access Allow 策略
 - 支持异步部署、进度查询，以及控制面重启后的未完成操作恢复
 - 可停止运行中的 Connector，但保留 Cloudflare 资源，之后可以再次部署
-- SQLite 保存本地状态；Cloudflare API Token 只写入权限为 `0600` 的 Secret 文件
+- SQLite 保存本地状态；Cloudflare API Token 和托管 Connector Token 只写入权限为
+  `0600` 的 Secret 文件
 
 当前 MVP 只支持 Web Origin，不支持 SSH、TCP、RDP 或独立的远程 Connector，也不导入
 或删除未由 TunnelBox 明确绑定的远端资源。
@@ -40,9 +41,10 @@ Tunnel 发布出去。它以受控方式运行 `cloudflared`，创建所需的 C
 docker compose -f deploy/docker-compose.yml up --build -d
 ```
 
-打开 <http://127.0.0.1:8080>，首次使用时直接创建管理员密码。登录后控制台会使用安全的
-持久化会话 Cookie；用户不需要查找或复制任何令牌。示例 Compose 把控制面映射到本机，并把
-SQLite、Connector 状态和 Secret 保存在 `tunnelbox-data` 卷中；镜像已经包含 `cloudflared`。
+打开 <http://127.0.0.1:8080>，首次使用时直接创建管理员密码。登录后控制台会使用
+HttpOnly、SameSite=Lax 的持久化会话 Cookie；用户不需要查找或复制任何令牌。示例 Compose
+把控制面映射到本机，并把 SQLite、Connector 状态和 Secret 保存在 `tunnelbox-data` 卷中；
+镜像已经包含按 digest 固定的 `cloudflared`。
 
 ### 从源码运行
 
@@ -54,8 +56,9 @@ cd ..
 go run ./cmd/tunnelbox
 ```
 
-打开 <http://127.0.0.1:8080>，首次使用时创建管理员密码。之后访问会自动使用安全的持久化会话
-Cookie。局域网或公网监听时，请额外使用反向代理或网络策略限制访问范围；应用本身统一使用密码登录。
+打开 <http://127.0.0.1:8080>，首次使用时创建管理员密码。局域网或公网监听时，请额外使用
+反向代理或网络策略限制访问范围；应用本身统一使用密码登录。浏览器通过 HTTPS 访问 TunnelBox
+时，应设置 `TUNNELBOX_COOKIE_SECURE=true`。
 
 ## 第一次部署
 
@@ -72,7 +75,8 @@ Cookie。局域网或公网监听时，请额外使用反向代理或网络策�
 3. Private 在“配置连接”中留空 Zone ID；Public 填写目标 Zone ID；Quick 可以跳过
    Cloudflare 配置。保存时 TunnelBox 会先验证 Token。
 4. 填写服务名称和 Origin URL。Private 的“私网 IP”应与 Origin 主机一致；Public 的
-   “公网域名”必须属于目标 Zone；Quick 不需要填写主机名和 Allow 条件。
+   “公网域名”必须属于目标 Zone；Quick 不需要填写主机名和 Allow 条件，保存的 hostname
+   为空字符串。
 5. 点击“部署”，在操作面板等待异步操作完成。重复部署会复用已保存的远端资源。
 6. 按模式验证入口：打开 Quick 地址；通过 WARP 访问 Private 私网 IP；或在普通浏览器
    打开 Public 域名并完成 Access 登录。
@@ -82,8 +86,9 @@ Access 策略、DNS 记录和服务配置；之后点击“部署”即可恢复
 
 需要移除服务时，点击服务行中的“删除”并确认。没有远端引用的草稿或已停止服务会立即
 删除；已部署服务会先停止 Connector，再按本服务记录的 ID 删除 TunnelBox 创建的 DNS、
-Access、私网路由和 Tunnel，最后删除本地记录。操作面板会显示每一步；如果某一步失败，
-服务和剩余远端 ID 会保留，修复 Token 或权限后可以再次点击“删除”重试。
+Access、私网路由和 Tunnel，然后删除本地 Connector Token 文件，最后删除本地记录。操作
+面板会显示每一步；如果某一步失败，服务和剩余远端 ID 会保留，修复 Token、文件权限或
+Cloudflare 权限后可以再次点击“删除”重试。
 
 Private 不是普通公网 DNS 入口。需要先完成 Zero Trust 组织和设备注册，再配置
 [Split Tunnels](https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/configure/route-traffic/split-tunnels/)，否则资源即使部署成功，访问者也可能无法连到私网 IP。
@@ -109,6 +114,7 @@ Global API Key。TunnelBox 不把 Token 写入 SQLite、日志或 API 响应。
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `TUNNELBOX_LISTEN` | `127.0.0.1:8080` | HTTP 监听地址 |
+| `TUNNELBOX_COOKIE_SECURE` | `false` | 是否给会话 Cookie 设置 `Secure`；浏览器通过 HTTPS 访问时启用 |
 | `TUNNELBOX_DATABASE` | `data/tunnelbox.db` | SQLite 文件 |
 | `TUNNELBOX_CLOUDFLARE_TOKEN_FILE` | `data/cloudflare.token` | Cloudflare Token 文件 |
 | `TUNNELBOX_CLOUDFLARED_BINARY` | `cloudflared` | Connector 可执行文件 |
@@ -118,11 +124,18 @@ Global API Key。TunnelBox 不把 Token 写入 SQLite、日志或 API 响应。
 `TUNNELBOX_WORKSPACE_ID` 和 `TUNNELBOX_WORKSPACE_NAME` 可用于修改默认 Workspace
 （分别为 `default` 和 `Default`）。
 
+TunnelBox 只支持当前 SQLite Schema，不包含迁移链。启动时如果数据库版本不是当前版本，
+程序会删除原数据库及其 WAL、SHM 文件，并创建一个空的当前 Schema 数据库；升级前请自行
+备份需要保留的数据。新数据库和版本匹配的数据库会正常打开。
+
+Docker 构建从按 digest 固定的上游镜像复制 `cloudflared`，不使用浮动版本标签。
+
 ## API 和开发
 
 完整 API 契约见 [`docs/openapi.yaml`](docs/openapi.yaml)。部署接口返回 `202`，客户端通过
 `/api/v1/operations/:id` 轮询进度。首次使用调用 `/api/v1/auth/setup` 创建密码，之后调用
-`/api/v1/auth/login` 登录；服务端会设置 HttpOnly 会话 Cookie。
+`/api/v1/auth/login` 登录；服务端会设置 HttpOnly、SameSite=Lax 会话 Cookie，并根据
+`TUNNELBOX_COOKIE_SECURE` 设置其 `Secure` 属性。
 
 ```sh
 # Quick：不需要域名或 Cloudflare 配置
