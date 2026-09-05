@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -282,6 +284,60 @@ func TestRouterRequiresBearerTokenAndReturnsRequestID(t *testing.T) {
 	}
 	if body["code"] != "unauthorized" {
 		t.Fatalf("error body = %v", body)
+	}
+}
+
+func TestRouterValidatesAndPropagatesRequestID(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		valid bool
+	}{
+		{name: "safe client id", value: "client.ID_123-abc", valid: true},
+		{name: "space", value: "bad request", valid: false},
+		{name: "quote", value: `bad"request`, valid: false},
+		{name: "control", value: "bad\x01request", valid: false},
+		{name: "unicode", value: "request-编号", valid: false},
+		{name: "too long", value: strings.Repeat("a", 97), valid: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			router, err := NewRouter(Dependencies{
+				Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Auth: testAuth(t), Logger: logger,
+			})
+			if err != nil {
+				t.Fatalf("new router: %v", err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/services", nil)
+			request.Header.Set("X-Request-ID", tt.value)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+
+			responseID := response.Header().Get("X-Request-ID")
+			if !validRequestID(responseID) {
+				t.Fatalf("response request id = %q", responseID)
+			}
+			if tt.valid && responseID != tt.value {
+				t.Fatalf("response request id = %q, want %q", responseID, tt.value)
+			}
+			if !tt.valid && responseID == tt.value {
+				t.Fatalf("unsafe request id was accepted: %q", responseID)
+			}
+
+			var body map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+				t.Fatalf("decode log: %v", err)
+			}
+			if body["request_id"] != responseID || entry["request_id"] != responseID {
+				t.Fatalf("request ids differ: header=%q body=%v log=%v", responseID, body["request_id"], entry["request_id"])
+			}
+		})
 	}
 }
 

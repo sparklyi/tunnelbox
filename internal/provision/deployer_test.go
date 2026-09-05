@@ -73,7 +73,13 @@ func (p recordingAccess) EnsurePolicy(context.Context, AccessPolicySpec) (Remote
 }
 
 type recordingDNS struct {
-	calls *[]string
+	calls           *[]string
+	validationError error
+}
+
+func (p recordingDNS) ValidateHostname(context.Context, string) error {
+	*p.calls = append(*p.calls, "zone_validation")
+	return p.validationError
 }
 
 func (p recordingDNS) EnsureCNAME(context.Context, CNAMESpec) (RemoteRef, error) {
@@ -181,7 +187,7 @@ func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 	var calls []string
 	var policyIDs []string
 	operations := operation.NewManager(store.Operations())
-	deployer, err := NewDeployer(services, operations, recordingTunnel{calls: &calls}, recordingAccess{calls: &calls, policyIDs: &policyIDs}, recordingDNS{&calls}, recordingConnector{calls: &calls}, recordingOrigin{&calls})
+	deployer, err := NewDeployer(services, operations, recordingTunnel{calls: &calls}, recordingAccess{calls: &calls, policyIDs: &policyIDs}, recordingDNS{calls: &calls}, recordingConnector{calls: &calls}, recordingOrigin{&calls})
 	if err != nil {
 		t.Fatalf("new deployer: %v", err)
 	}
@@ -208,7 +214,7 @@ func TestDeployerPersistsReferencesAndAppliesSafeOrder(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	expected := []string{"origin", "tunnel", "route", "connector", "health", "application", "policy", "application", "dns"}
+	expected := []string{"origin", "zone_validation", "tunnel", "route", "connector", "health", "application", "policy", "application", "dns"}
 	if !reflect.DeepEqual(calls, expected) {
 		t.Fatalf("calls = %v, want %v", calls, expected)
 	}
@@ -608,6 +614,39 @@ func TestDeployerPublicRequiresDNSAdapter(t *testing.T) {
 	}
 	if len(calls) != 0 {
 		t.Fatalf("adapters were called before dependency check: %v", calls)
+	}
+}
+
+func TestDeployerRejectsPublicHostnameBeforeCreatingRemoteResources(t *testing.T) {
+	db, services, operations, item := newDeploymentFixture(t, service.CreateInput{
+		Name: "Public app", Mode: service.ModePublic, Hostname: "notexample.com", OriginURL: "http://127.0.0.1:8080",
+		AllowType: service.AllowEmail, AllowValue: "user@example.com",
+	})
+	defer db.Close()
+
+	var calls []string
+	deployer, err := NewDeployer(services, operations, recordingTunnel{calls: &calls}, recordingAccess{calls: &calls},
+		recordingDNS{calls: &calls, validationError: errors.New("outside zone")}, recordingConnector{calls: &calls}, nil)
+	if err != nil {
+		t.Fatalf("new public deployer: %v", err)
+	}
+	op, err := deployer.Deploy(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("start public deploy: %v", err)
+	}
+	current := waitForOperation(t, operations, op.ID)
+	if current.Status != operation.StatusFailed || current.ErrorCode != "hostname_not_in_zone" {
+		t.Fatalf("public operation = %+v", current)
+	}
+	if !reflect.DeepEqual(calls, []string{"zone_validation"}) {
+		t.Fatalf("calls before hostname rejection = %v", calls)
+	}
+	loaded, err := services.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("load rejected service: %v", err)
+	}
+	if loaded.State != service.StateError || hasCloudflareRefs(loaded.RemoteRefs) {
+		t.Fatalf("service after hostname rejection = %+v", loaded)
 	}
 }
 

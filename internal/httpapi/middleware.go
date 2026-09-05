@@ -20,7 +20,7 @@ var requestSequence atomic.Uint64
 
 func requestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id := strings.TrimSpace(c.GetHeader("X-Request-ID"))
+		id := c.GetHeader("X-Request-ID")
 		if !validRequestID(id) {
 			id = newRequestID()
 		}
@@ -105,8 +105,10 @@ func validRequestID(value string) bool {
 	if value == "" || len(value) > 96 {
 		return false
 	}
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
+	for i := 0; i < len(value); i++ {
+		char := value[i]
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') && char != '.' && char != '_' && char != '-' {
 			return false
 		}
 	}

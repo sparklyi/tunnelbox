@@ -346,6 +346,14 @@ func (d *Deployer) execute(ctx context.Context, op operation.Operation, item ser
 	if d.tunnel == nil || d.access == nil || (item.Mode == service.ModePublic && d.dns == nil) {
 		return fail(errors.New("cloudflare adapters are not configured"), "cloudflare_not_configured", "Cloudflare integration is not configured")
 	}
+	if item.Mode == service.ModePublic {
+		if err := setStep("zone_validation"); err != nil {
+			return err
+		}
+		if err := d.dns.ValidateHostname(ctx, item.Hostname); err != nil {
+			return fail(err, "hostname_not_in_zone", "hostname does not belong to the selected Cloudflare zone")
+		}
+	}
 
 	refs := item.RemoteRefs
 	if err := setStep("tunnel"); err != nil {

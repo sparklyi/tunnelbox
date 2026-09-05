@@ -441,6 +441,25 @@ func (c *Client) EnsureCNAME(ctx context.Context, spec provision.CNAMESpec) (pro
 	return provision.RemoteRef{ID: result.ID}, nil
 }
 
+func (c *Client) ValidateHostname(ctx context.Context, hostname string) error {
+	if c.zoneID == "" {
+		return &Error{Code: "cloudflare_zone_required"}
+	}
+	var zone zoneResult
+	if err := c.call(ctx, http.MethodGet, c.zonePath(), nil, &zone); err != nil {
+		return err
+	}
+	zoneName := canonicalDNSName(zone.Name)
+	hostname = canonicalDNSName(hostname)
+	if zoneName == "" {
+		return &Error{Code: "cloudflare_invalid_zone_response"}
+	}
+	if hostname != zoneName && !strings.HasSuffix(hostname, "."+zoneName) {
+		return &Error{Code: "hostname_not_in_zone"}
+	}
+	return nil
+}
+
 func (c *Client) DeleteCNAME(ctx context.Context, id string) error {
 	if c.zoneID == "" {
 		return &Error{Code: "cloudflare_zone_required"}
@@ -678,6 +697,10 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func canonicalDNSName(value string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
 }
 
 var _ provision.TunnelPort = (*Client)(nil)

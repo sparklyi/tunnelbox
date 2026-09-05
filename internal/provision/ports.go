@@ -142,6 +142,7 @@ type AccessDestroyer interface {
 }
 
 type DNSPort interface {
+	ValidateHostname(context.Context, string) error
 	EnsureCNAME(context.Context, CNAMESpec) (RemoteRef, error)
 }
 

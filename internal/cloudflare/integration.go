@@ -241,6 +241,14 @@ func (i *Integration) EnsureCNAME(ctx context.Context, spec provision.CNAMESpec)
 	return client.EnsureCNAME(ctx, spec)
 }
 
+func (i *Integration) ValidateHostname(ctx context.Context, hostname string) error {
+	client, err := i.current()
+	if err != nil {
+		return err
+	}
+	return client.ValidateHostname(ctx, hostname)
+}
+
 func (i *Integration) DeleteCNAME(ctx context.Context, id string) error {
 	client, err := i.current()
 	if err != nil {

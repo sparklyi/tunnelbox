@@ -503,7 +503,7 @@ func statusForCode(code string) int {
 	switch code {
 	case "cloudflare_configuration_invalid", "cloudflare_zone_not_available", "cloudflare_token_inactive":
 		return http.StatusBadRequest
-	case "invalid_mode", "private_target_invalid", "cloudflare_zone_required":
+	case "invalid_mode", "private_target_invalid", "cloudflare_zone_required", "hostname_not_in_zone":
 		return http.StatusBadRequest
 	case "cloudflare_not_configured", "connector_not_running":
 		return http.StatusConflict
@@ -529,6 +529,8 @@ func messageForCode(code string) string {
 		return "the selected Cloudflare zone is not available"
 	case "cloudflare_zone_required":
 		return "a Cloudflare zone is required for public mode"
+	case "hostname_not_in_zone":
+		return "hostname does not belong to the selected Cloudflare zone"
 	case "cloudflare_token_inactive":
 		return "the Cloudflare API token is not active"
 	case "cloudflare_token_path_unconfigured":

@@ -253,6 +253,33 @@ func TestClientDeletesOwnedResourcesAndTreatsMissingResourcesAsSuccess(t *testin
 	}
 }
 
+func TestClientValidatesHostnameWithinSelectedZone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/zones/zone" {
+			http.Error(w, `{"success":false}`, http.StatusNotFound)
+			return
+		}
+		writeEnvelope(w, map[string]any{"id": "zone", "name": " Example.COM. "})
+	}))
+	defer server.Close()
+
+	client, err := New(Config{Token: "secret", AccountID: "acct", ZoneID: "zone", BaseURL: server.URL + "/"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	for _, hostname := range []string{"example.com", "API.Example.COM.", " api.example.com "} {
+		if err := client.ValidateHostname(context.Background(), hostname); err != nil {
+			t.Errorf("ValidateHostname(%q): %v", hostname, err)
+		}
+	}
+	for _, hostname := range []string{"notexample.com", "example.com.invalid", ""} {
+		if err := client.ValidateHostname(context.Background(), hostname); err == nil || err.Error() != "hostname_not_in_zone" {
+			t.Errorf("ValidateHostname(%q) error = %v, want hostname_not_in_zone", hostname, err)
+		}
+	}
+}
+
 func TestClientListsAllCloudflarePages(t *testing.T) {
 	pages := make(map[string][]string)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
