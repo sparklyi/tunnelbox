@@ -18,7 +18,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { ...init, headers, credentials: "include" });
   const payload = (await response.json().catch(() => null)) as { message?: string; code?: string } | null;
   if (!response.ok) {
-    throw new ApiError(response.status, payload?.message || "请求未完成", payload?.code);
+    throw new ApiError(response.status, payload?.message || "Request failed", payload?.code);
   }
   return payload as T;
 }

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { request } from "../api/client";
 import type { Operation } from "../api/types";
+import { useLocale } from "../i18n";
 
 export function useOperationPolling(
   operation: Operation | null,
@@ -9,6 +10,7 @@ export function useOperationPolling(
   loadData: (showRefresh?: boolean) => Promise<boolean>,
   setError: Dispatch<SetStateAction<string>>,
 ) {
+  const { errorMessage } = useLocale();
   useEffect(() => {
     if (!operation || ["succeeded", "failed", "unknown"].includes(operation.status)) return;
     let stopped = false;
@@ -22,12 +24,12 @@ export function useOperationPolling(
           }
         }
       } catch (caught) {
-        if (!stopped) setError(caught instanceof Error ? caught.message : "无法读取操作进度");
+        if (!stopped) setError(errorMessage(caught, "error.operationRead"));
       }
     }, 1000);
     return () => {
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [loadData, operation, setError, setOperation]);
+  }, [errorMessage, loadData, operation, setError, setOperation]);
 }
