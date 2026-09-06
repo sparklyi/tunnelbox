@@ -166,3 +166,7 @@ go test -race ./...
 go vet ./...
 cd web && npm run build
 ```
+
+## License
+
+TunnelBox is open source under the [MIT License](LICENSE).

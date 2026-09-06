@@ -46,9 +46,9 @@ export function AuthScreen({ state, onAuthenticated, onAbout, error }: AuthScree
     }
   }
 
-  if (state === "loading") return <div className="auth-shell"><Spinner size={24} /></div>;
+  if (state === "loading") return <main className="auth-shell"><Spinner size={24} /></main>;
   return (
-    <div className="auth-shell">
+    <main className="auth-shell">
       <motion.form className="auth-card" onSubmit={submit} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
         <div className="auth-toolbar"><LanguageSwitch /></div>
         <img className="brand-mark" src="/assets/logo.svg" width="40" height="40" alt="" />
@@ -61,6 +61,6 @@ export function AuthScreen({ state, onAuthenticated, onAbout, error }: AuthScree
         <button type="submit" className="button button-primary auth-submit" disabled={submitting}>{submitting ? <Spinner /> : <ArrowRight size={16} />}{submitting ? t("auth.wait") : t(setup ? "auth.setupAction" : "auth.loginAction")}</button>
         <button type="button" className="auth-about" onClick={onAbout}><Info size={15} />{t("common.learnMore")}</button>
       </motion.form>
-    </div>
+    </main>
   );
 }

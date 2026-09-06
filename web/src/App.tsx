@@ -8,6 +8,7 @@ import {
   Info,
   LayoutList,
   LockKeyhole,
+  LogOut,
   Plus,
   RefreshCw,
   Settings2,
@@ -32,6 +33,24 @@ import { formatTime } from "./presentation";
 
 const emptyIntegration: IntegrationStatus = { configured: false };
 const onboardingStorageKey = "tunnelbox.onboarding.dismissed";
+
+function GitHubMark() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
+      <path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656" />
+    </svg>
+  );
+}
+
+function ProjectFooter() {
+  return (
+    <footer className="page-footer">
+      <span>&copy; 2026 TunnelBox contributors</span><span aria-hidden="true">&middot;</span>
+      <a href="https://github.com/sparklyi/tunnelbox" target="_blank" rel="noreferrer"><GitHubMark /><span>GitHub</span></a><span aria-hidden="true">&middot;</span>
+      <a href="https://github.com/sparklyi/tunnelbox/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>
+    </footer>
+  );
+}
 
 function hasDismissedOnboarding() {
   if (typeof window === "undefined") return false;
@@ -197,6 +216,15 @@ function App() {
     }
   }
 
+  async function logout() {
+    try {
+      await request<void>("/api/v1/auth/logout", { method: "POST" });
+      setAuthState("login");
+    } catch (caught) {
+      setError(errorMessage(caught, "error.generic"));
+    }
+  }
+
   function closeGuide() {
     rememberOnboardingDismissed();
     setGuideOpen(false);
@@ -222,7 +250,10 @@ function App() {
   if (authState !== "authenticated") {
     return (
       <MotionConfig reducedMotion="user">
-        <AuthScreen state={authState} onAuthenticated={() => setAuthState("authenticated")} onAbout={() => setAboutOpen(true)} error={error} />
+        <div className="auth-page">
+          <AuthScreen state={authState} onAuthenticated={() => setAuthState("authenticated")} onAbout={() => setAboutOpen(true)} error={error} />
+          <ProjectFooter />
+        </div>
         <AnimatePresence>{aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}</AnimatePresence>
       </MotionConfig>
     );
@@ -242,12 +273,13 @@ function App() {
           </div>
           <nav className="side-nav" aria-label={t("app.mainNavigation")}>
             <a className="nav-item active" href="#services" aria-label={t("app.services")} title={t("app.services")}><LayoutList size={16} /><span>{t("app.services")}</span></a>
-            <a className="nav-item" href="#integration" aria-label={t("app.cloudflare")} title={t("app.cloudflare")}><Cloud size={16} /><span>{t("app.cloudflare")}</span></a>
+            <button type="button" className="nav-item" onClick={() => setIntegrationOpen(true)} aria-haspopup="dialog" aria-expanded={integrationOpen} aria-label={t("app.cloudflare")} title={t("app.cloudflare")}><Cloud size={16} /><span>{t("app.cloudflare")}</span></button>
             <button type="button" className="nav-item" onClick={() => setAboutOpen(true)} aria-label={t("app.about")} title={t("app.about")}><Info size={16} /><span>{t("app.about")}</span></button>
             <button type="button" className="nav-item" onClick={() => setGuideOpen(true)} aria-label={t("app.guide")} title={t("app.guide")}><CircleHelp size={16} /><span>{t("app.guide")}</span></button>
           </nav>
           <div className="sidebar-bottom">
             <LanguageSwitch />
+            <button type="button" className="sidebar-logout" onClick={() => void logout()} aria-label={t("app.logout")} title={t("app.logout")}><LogOut size={15} /><span>{t("app.logout")}</span></button>
             <div className="sidebar-footnote"><LockKeyhole size={15} /><span>{t("app.policyNote")}</span></div>
           </div>
         </aside>
@@ -255,12 +287,6 @@ function App() {
         <main className="main-content">
           <header className="topbar">
             <div><p className="eyebrow">{t("app.workspacePath")}</p><h1>{t("app.publishTitle")}</h1></div>
-            <div className="topbar-actions">
-              <button type="button" className="button button-secondary" onClick={async () => { try { await request<void>("/api/v1/auth/logout", { method: "POST" }); setAuthState("login"); } catch (caught) { setError(errorMessage(caught, "error.generic")); } }}><LockKeyhole size={15} />{t("app.logout")}</button>
-              <button className="icon-button" type="button" onClick={() => void loadData(true)} title={t("app.refresh")} aria-label={t("app.refresh")}>
-                {refreshing ? <Spinner size={17} /> : <RefreshCw size={17} />}
-              </button>
-            </div>
           </header>
 
           <div className="toast-region" aria-live="polite" aria-atomic="true">
@@ -294,13 +320,19 @@ function App() {
           <section id="services" className="services-section">
             <div className="section-heading">
               <div><p className="eyebrow">{t("app.publishTargets")}</p><h2>{t("app.services")} <span>{services.length}</span></h2></div>
-              <button type="button" className="button button-primary" onClick={() => setEditor("new")}><Plus size={17} />{t("app.createService")}</button>
+              <div className="section-actions">
+                <button className="icon-button" type="button" onClick={() => void loadData(true)} disabled={refreshing} title={t("app.refresh")} aria-label={t("app.refresh")}>
+                  {refreshing ? <Spinner size={17} /> : <RefreshCw size={17} />}
+                </button>
+                <button type="button" className="button button-primary" onClick={() => setEditor("new")}><Plus size={17} />{t("app.createService")}</button>
+              </div>
             </div>
             <ServiceTable services={services} connectors={connectors} operation={operation} loading={loading} onCreate={() => setEditor("new")} onEdit={setEditor} onDeploy={(item) => void deploy(item)} onStop={(item) => void stop(item)} onDelete={setDeleteTarget} />
           </section>
 
           <OperationPanel operation={operation} services={services} onClose={() => setOperation(null)} />
-          <footer className="page-footer"><span>{t("app.connectorOnline", { count: activeConnectors })}</span><span>{t("app.lastUpdated", { time: formatTime(services[0]?.updated_at, locale) })}</span></footer>
+          <div className="page-status"><span>{t("app.connectorOnline", { count: activeConnectors })}</span><span>{t("app.lastUpdated", { time: formatTime(services[0]?.updated_at, locale) })}</span></div>
+          <ProjectFooter />
         </main>
 
         <AnimatePresence>
