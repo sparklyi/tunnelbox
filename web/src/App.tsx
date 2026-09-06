@@ -1,10 +1,12 @@
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import {
+  Boxes,
   Check,
-  ChevronDown,
   CircleAlert,
   CircleHelp,
   Cloud,
+  Info,
+  LayoutList,
   LockKeyhole,
   Plus,
   RefreshCw,
@@ -14,19 +16,21 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, request } from "./api/client";
 import type { AuthState, Connector, IntegrationStatus, Operation, Service, Zone } from "./api/types";
+import { AboutDialog } from "./components/AboutDialog";
 import { AuthScreen } from "./components/AuthScreen";
 import { DeleteDialog } from "./components/DeleteDialog";
 import { GuideDialog } from "./components/GuideDialog";
 import { IntegrationDialog } from "./components/IntegrationDialog";
+import { LanguageSwitch } from "./components/LanguageSwitch";
 import { OperationPanel } from "./components/OperationPanel";
 import { ServiceDialog } from "./components/ServiceDialog";
 import { ServiceTable } from "./components/ServiceTable";
 import { Spinner } from "./components/Spinner";
 import { useOperationPolling } from "./hooks/useOperationPolling";
+import { useLocale } from "./i18n";
 import { formatTime } from "./presentation";
 
 const emptyIntegration: IntegrationStatus = { configured: false };
-
 const onboardingStorageKey = "tunnelbox.onboarding.dismissed";
 
 function hasDismissedOnboarding() {
@@ -47,6 +51,7 @@ function rememberOnboardingDismissed() {
 }
 
 function App() {
+  const { locale, t, errorMessage } = useLocale();
   const [authState, setAuthState] = useState<AuthState>("loading");
   const loadGenerationRef = useRef(0);
   const [integration, setIntegration] = useState<IntegrationStatus>(emptyIntegration);
@@ -62,6 +67,7 @@ function App() {
   const [editor, setEditor] = useState<Service | "new" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Service | null>(null);
   const [guideOpen, setGuideOpen] = useState(() => !hasDismissedOnboarding());
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   const loadData = useCallback(
     async (showRefresh = false): Promise<boolean> => {
@@ -93,7 +99,7 @@ function App() {
         if (caught instanceof ApiError && caught.status === 401) {
           setAuthState("login");
         } else {
-          setError(caught instanceof Error ? caught.message : "无法加载控制面数据");
+          setError(errorMessage(caught, "error.loadData"));
         }
         return false;
       } finally {
@@ -103,18 +109,44 @@ function App() {
         }
       }
     },
-    []
+    [errorMessage]
   );
 
   useEffect(() => {
     void request<{ initialized: boolean }>("/api/v1/auth/status")
       .then((status) => setAuthState(status.initialized ? "login" : "setup"))
-      .catch(() => setError("无法读取登录状态"));
+      .catch(() => setError(t("error.authStatus")));
   }, []);
 
   useEffect(() => {
     if (authState === "authenticated") void loadData();
   }, [authState, loadData]);
+
+  useEffect(() => {
+    setError("");
+    setNotice("");
+  }, [locale]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => setError(""), 8000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
+  useEffect(() => {
+    if (!operation || !["succeeded", "failed", "unknown"].includes(operation.status)) return;
+    const operationID = operation.operation_id;
+    const timer = window.setTimeout(() => {
+      setOperation((current) => current?.operation_id === operationID ? null : current);
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [operation]);
 
   useOperationPolling(operation, setOperation, loadData, setError);
 
@@ -126,10 +158,10 @@ function App() {
     try {
       const next = await request<Operation>(`/api/v1/services/${item.id}/deploy`, { method: "POST" });
       setOperation(next);
-      setNotice(`已开始部署 ${item.name}`);
+      setNotice(t("notice.deployStarted", { name: item.name }));
       await loadData(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "无法开始部署");
+      setError(errorMessage(caught, "error.deploy"));
     }
   }
 
@@ -139,10 +171,10 @@ function App() {
     try {
       const next = await request<Operation>(`/api/v1/services/${item.id}/stop`, { method: "POST" });
       setOperation(next);
-      setNotice(`已开始停止 ${item.name}`);
+      setNotice(t("notice.stopStarted", { name: item.name }));
       await loadData(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "无法停止服务");
+      setError(errorMessage(caught, "error.stop"));
     }
   }
 
@@ -154,17 +186,16 @@ function App() {
       const next = await request<Operation | null>(`/api/v1/services/${item.id}`, { method: "DELETE" });
       if (next?.operation_id) {
         setOperation(next);
-        setNotice(`已开始删除 ${item.name}`);
+        setNotice(t("notice.deleteStarted", { name: item.name }));
       } else {
         setServices((current) => current.filter((entry) => entry.id !== item.id));
-        setNotice(`已删除 ${item.name}`);
+        setNotice(t("notice.deleted", { name: item.name }));
       }
       await loadData(true);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "无法删除服务");
+      setError(errorMessage(caught, "error.delete"));
     }
   }
-
 
   function closeGuide() {
     rememberOnboardingDismissed();
@@ -181,123 +212,104 @@ function App() {
     setIntegrationOpen(true);
   }
 
+  function tokenStateLabel(value?: string) {
+    if (value === "active") return t("integration.tokenActive");
+    if (value === "inactive") return t("integration.tokenInactive");
+    if (value === "expired") return t("integration.tokenExpired");
+    return value || t("app.notConfigured");
+  }
+
   if (authState !== "authenticated") {
-    return <AuthScreen state={authState} onAuthenticated={() => setAuthState("authenticated")} error={error} />;
+    return (
+      <MotionConfig reducedMotion="user">
+        <AuthScreen state={authState} onAuthenticated={() => setAuthState("authenticated")} onAbout={() => setAboutOpen(true)} error={error} />
+        <AnimatePresence>{aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}</AnimatePresence>
+      </MotionConfig>
+    );
   }
 
   return (
     <MotionConfig reducedMotion="user">
       <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-lockup">
-          <img className="brand-mark" src="/assets/logo.svg" width="40" height="40" alt="" />
-          <div>
-            <strong>TunnelBox</strong>
-            <span>控制面</span>
+        <aside className="sidebar">
+          <div className="brand-lockup">
+            <img className="brand-mark" src="/assets/logo.svg" width="40" height="40" alt="" />
+            <div><strong>TunnelBox</strong><span>{t("app.controlPlane")}</span></div>
           </div>
-        </div>
-        <div className="workspace-switcher">
-          <span className="eyebrow">工作区</span>
-          <button type="button" className="workspace-button" title="当前工作区">
-            <span>Default</span><ChevronDown size={15} />
-          </button>
-        </div>
-        <nav className="side-nav" aria-label="主导航">
-          <a className="nav-item active" href="#services">服务</a>
-          <a className="nav-item" href="#integration">Cloudflare</a>
-        </nav>
-        <div className="sidebar-footnote">
-          <LockKeyhole size={15} />
-          <span>访问策略由 Cloudflare Access 执行</span>
-        </div>
-      </aside>
+          <div className="workspace-switcher">
+            <span className="eyebrow">{t("app.workspace")}</span>
+            <div className="workspace-current" title={t("app.currentWorkspace")}><Boxes size={16} /><span>Default</span></div>
+          </div>
+          <nav className="side-nav" aria-label={t("app.mainNavigation")}>
+            <a className="nav-item active" href="#services" aria-label={t("app.services")} title={t("app.services")}><LayoutList size={16} /><span>{t("app.services")}</span></a>
+            <a className="nav-item" href="#integration" aria-label={t("app.cloudflare")} title={t("app.cloudflare")}><Cloud size={16} /><span>{t("app.cloudflare")}</span></a>
+            <button type="button" className="nav-item" onClick={() => setAboutOpen(true)} aria-label={t("app.about")} title={t("app.about")}><Info size={16} /><span>{t("app.about")}</span></button>
+            <button type="button" className="nav-item" onClick={() => setGuideOpen(true)} aria-label={t("app.guide")} title={t("app.guide")}><CircleHelp size={16} /><span>{t("app.guide")}</span></button>
+          </nav>
+          <div className="sidebar-bottom">
+            <LanguageSwitch />
+            <div className="sidebar-footnote"><LockKeyhole size={15} /><span>{t("app.policyNote")}</span></div>
+          </div>
+        </aside>
 
-      <main className="main-content">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">工作区 / Default</p>
-            <h1>服务发布</h1>
-          </div>
-          <div className="topbar-actions">
-            <button type="button" className="button button-secondary guide-trigger" onClick={() => setGuideOpen(true)} title="打开使用指南">
-              <CircleHelp size={16} />使用指南
-            </button>
-            <button type="button" className="button button-secondary" onClick={async () => { await request<void>("/api/v1/auth/logout", { method: "POST" }); setAuthState("login"); }}><LockKeyhole size={15} />退出登录</button>
-            <button className="icon-button" type="button" onClick={() => void loadData(true)} title="刷新数据" aria-label="刷新数据">
-              {refreshing ? <Spinner size={17} /> : <RefreshCw size={17} />}
-            </button>
-          </div>
-        </header>
-
-        <AnimatePresence initial={false}>
-          {error && (
-            <motion.div className="banner banner-error" role="alert" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>
-              <CircleAlert size={17} />
-              <span>{error}</span>
-              <button type="button" className="banner-close" onClick={() => setError("")} aria-label="关闭提示" title="关闭提示"><X size={16} /></button>
-            </motion.div>
-          )}
-          {notice && (
-            <motion.div className="banner banner-success" role="status" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}>
-              <Check size={17} /><span>{notice}</span>
-              <button type="button" className="banner-close" onClick={() => setNotice("")} aria-label="关闭提示" title="关闭提示"><X size={16} /></button>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <motion.section id="integration" className="integration-strip" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }}>
-          <div className="integration-icon"><Cloud size={20} /></div>
-          <div className="integration-copy">
-            <span className="eyebrow">Cloudflare 集成</span>
-            <strong>{integration.configured ? "已连接" : "尚未连接"}</strong>
-            <span>{integration.configured
-              ? integration.zone_id ? `${integration.account_id} · ${integration.zone_id}` : `${integration.account_id} · 仅账号权限`
-              : "Quick 模式无需配置；Private / Public 模式需要账号权限"}</span>
-          </div>
-          <div className="integration-state">
-            <span className={`status-dot ${integration.configured ? "ok" : "muted"}`} />
-            <span>{integration.token_state || "未配置"}</span>
-          </div>
-          <button type="button" className="button button-secondary" onClick={() => setIntegrationOpen(true)}>
-            <Settings2 size={16} />{integration.configured ? "管理连接" : "配置连接"}
-          </button>
-        </motion.section>
-
-        <section id="services" className="services-section">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">发布目标</p>
-              <h2>服务 <span>{services.length}</span></h2>
+        <main className="main-content">
+          <header className="topbar">
+            <div><p className="eyebrow">{t("app.workspacePath")}</p><h1>{t("app.publishTitle")}</h1></div>
+            <div className="topbar-actions">
+              <button type="button" className="button button-secondary" onClick={async () => { try { await request<void>("/api/v1/auth/logout", { method: "POST" }); setAuthState("login"); } catch (caught) { setError(errorMessage(caught, "error.generic")); } }}><LockKeyhole size={15} />{t("app.logout")}</button>
+              <button className="icon-button" type="button" onClick={() => void loadData(true)} title={t("app.refresh")} aria-label={t("app.refresh")}>
+                {refreshing ? <Spinner size={17} /> : <RefreshCw size={17} />}
+              </button>
             </div>
-            <button type="button" className="button button-primary" onClick={() => setEditor("new")}>
-              <Plus size={17} />新建服务
-            </button>
+          </header>
+
+          <div className="toast-region" aria-live="polite" aria-atomic="true">
+            <AnimatePresence initial={false}>
+              {error && (
+                <motion.div key="error" className="toast toast-error" role="alert" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 18 }}>
+                  <CircleAlert size={17} /><span>{error}</span><button type="button" className="toast-close" onClick={() => setError("")} aria-label={t("app.closeNotice")} title={t("app.closeNotice")}><X size={16} /></button>
+                </motion.div>
+              )}
+              {notice && (
+                <motion.div key="notice" className="toast toast-success" role="status" initial={{ opacity: 0, x: 18 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 18 }}>
+                  <Check size={17} /><span>{notice}</span><button type="button" className="toast-close" onClick={() => setNotice("")} aria-label={t("app.closeNotice")} title={t("app.closeNotice")}><X size={16} /></button>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
-          <ServiceTable
-            services={services}
-            connectors={connectors}
-            operation={operation}
-            loading={loading}
-            onCreate={() => setEditor("new")}
-            onEdit={setEditor}
-            onDeploy={(item) => void deploy(item)}
-            onStop={(item) => void stop(item)}
-            onDelete={setDeleteTarget}
-          />
-        </section>
+          <motion.section id="integration" className="integration-strip" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.25 }}>
+            <div className="integration-icon"><Cloud size={20} /></div>
+            <div className="integration-copy">
+              <span className="eyebrow">{t("app.integration")}</span>
+              <strong>{t(integration.configured ? "app.connected" : "app.notConnected")}</strong>
+              <span>{integration.configured
+                ? integration.zone_id ? t("app.accountAndZone", { account: integration.account_id || "-", zone: integration.zone_id }) : t("app.accountOnly", { account: integration.account_id || "-" })
+                : t("app.integrationHint")}</span>
+            </div>
+            <div className="integration-state"><span className={`status-dot ${integration.configured ? "ok" : "muted"}`} /><span>{tokenStateLabel(integration.token_state)}</span></div>
+            <button type="button" className="button button-secondary" onClick={() => setIntegrationOpen(true)}><Settings2 size={16} />{t(integration.configured ? "app.manageConnection" : "app.configureConnection")}</button>
+          </motion.section>
 
-        <OperationPanel operation={operation} services={services} />
+          <section id="services" className="services-section">
+            <div className="section-heading">
+              <div><p className="eyebrow">{t("app.publishTargets")}</p><h2>{t("app.services")} <span>{services.length}</span></h2></div>
+              <button type="button" className="button button-primary" onClick={() => setEditor("new")}><Plus size={17} />{t("app.createService")}</button>
+            </div>
+            <ServiceTable services={services} connectors={connectors} operation={operation} loading={loading} onCreate={() => setEditor("new")} onEdit={setEditor} onDeploy={(item) => void deploy(item)} onStop={(item) => void stop(item)} onDelete={setDeleteTarget} />
+          </section>
 
-        <footer className="page-footer"><span>{activeConnectors} 个 Connector 在线</span><span>最后更新 {formatTime(services[0]?.updated_at)}</span></footer>
-      </main>
+          <OperationPanel operation={operation} services={services} onClose={() => setOperation(null)} />
+          <footer className="page-footer"><span>{t("app.connectorOnline", { count: activeConnectors })}</span><span>{t("app.lastUpdated", { time: formatTime(services[0]?.updated_at, locale) })}</span></footer>
+        </main>
 
-      <AnimatePresence>
-        {guideOpen && <GuideDialog onClose={closeGuide} onQuick={startQuick} onConfigure={startConfiguration} />}
-        {integrationOpen && <IntegrationDialog initial={integration} zones={zones} onClose={() => setIntegrationOpen(false)} onSaved={(next) => { setIntegration(next); setIntegrationOpen(false); void loadData(true); }} />}
-        {editor && <ServiceDialog key={editor === "new" ? "new" : editor.id} value={editor === "new" ? null : editor} onClose={() => setEditor(null)} onSaved={(saved) => { setEditor(null); setServices((current) => editor === "new" ? [...current, saved] : current.map((item) => item.id === saved.id ? saved : item)); setNotice(editor === "new" ? "服务已创建" : "服务已更新"); }} />}
-        {deleteTarget && <DeleteDialog value={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => void remove(deleteTarget)} />}
-      </AnimatePresence>
+        <AnimatePresence>
+          {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
+          {guideOpen && <GuideDialog onClose={closeGuide} onQuick={startQuick} onConfigure={startConfiguration} />}
+          {integrationOpen && <IntegrationDialog initial={integration} zones={zones} onClose={() => setIntegrationOpen(false)} onSaved={(next) => { setIntegration(next); setIntegrationOpen(false); void loadData(true); }} />}
+          {editor && <ServiceDialog key={editor === "new" ? "new" : editor.id} value={editor === "new" ? null : editor} onClose={() => setEditor(null)} onSaved={(saved) => { setEditor(null); setServices((current) => editor === "new" ? [...current, saved] : current.map((item) => item.id === saved.id ? saved : item)); setNotice(t(editor === "new" ? "notice.serviceCreated" : "notice.serviceUpdated")); }} />}
+          {deleteTarget && <DeleteDialog value={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => void remove(deleteTarget)} />}
+        </AnimatePresence>
       </div>
     </MotionConfig>
   );
