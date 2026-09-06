@@ -42,6 +42,16 @@ function GitHubMark() {
   );
 }
 
+function ProjectFooter() {
+  return (
+    <footer className="page-footer">
+      <span>&copy; 2026 TunnelBox contributors</span><span aria-hidden="true">&middot;</span>
+      <a href="https://github.com/sparklyi/tunnelbox" target="_blank" rel="noreferrer"><GitHubMark /><span>GitHub</span></a><span aria-hidden="true">&middot;</span>
+      <a href="https://github.com/sparklyi/tunnelbox/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>
+    </footer>
+  );
+}
+
 function hasDismissedOnboarding() {
   if (typeof window === "undefined") return false;
   try {
@@ -240,7 +250,10 @@ function App() {
   if (authState !== "authenticated") {
     return (
       <MotionConfig reducedMotion="user">
-        <AuthScreen state={authState} onAuthenticated={() => setAuthState("authenticated")} onAbout={() => setAboutOpen(true)} error={error} />
+        <div className="auth-page">
+          <AuthScreen state={authState} onAuthenticated={() => setAuthState("authenticated")} onAbout={() => setAboutOpen(true)} error={error} />
+          <ProjectFooter />
+        </div>
         <AnimatePresence>{aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}</AnimatePresence>
       </MotionConfig>
     );
@@ -319,11 +332,7 @@ function App() {
 
           <OperationPanel operation={operation} services={services} onClose={() => setOperation(null)} />
           <div className="page-status"><span>{t("app.connectorOnline", { count: activeConnectors })}</span><span>{t("app.lastUpdated", { time: formatTime(services[0]?.updated_at, locale) })}</span></div>
-          <footer className="page-footer">
-            <span>&copy; 2026 TunnelBox contributors</span><span aria-hidden="true">&middot;</span>
-            <a href="https://github.com/sparklyi/tunnelbox" target="_blank" rel="noreferrer"><GitHubMark /><span>GitHub</span></a><span aria-hidden="true">&middot;</span>
-            <a href="https://github.com/sparklyi/tunnelbox/blob/main/LICENSE" target="_blank" rel="noreferrer">MIT License</a>
-          </footer>
+          <ProjectFooter />
         </main>
 
         <AnimatePresence>
