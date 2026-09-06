@@ -161,3 +161,7 @@ go test -race ./...
 go vet ./...
 cd web && npm run build
 ```
+
+## 许可证
+
+TunnelBox 基于 [MIT License](LICENSE) 开源。
