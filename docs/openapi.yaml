@@ -61,6 +61,19 @@ paths:
       responses:
         '204': { description: Session cookie set. }
         '401': { $ref: '#/components/responses/Error' }
+  /api/v1/auth/password:
+    put:
+      summary: Change the administrator password and revoke other sessions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordRequest' }
+      responses:
+        '204': { description: Password changed, other sessions revoked, and current session cookie replaced. }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /api/v1/auth/logout:
     post:
       summary: Log out and invalidate the current session
@@ -253,7 +266,25 @@ components:
       type: object
       required: [password]
       properties:
-        password: { type: string, format: password, writeOnly: true, minLength: 8, maxLength: 256 }
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 8
+          maxLength: 72
+          description: Must not exceed 72 bytes when UTF-8 encoded, as required by bcrypt.
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string, format: password, writeOnly: true }
+        new_password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 8
+          maxLength: 72
+          description: Must not exceed 72 bytes when UTF-8 encoded, as required by bcrypt.
     CloudflareConfigureRequest:
       type: object
       required: [account_id, token]

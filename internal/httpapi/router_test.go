@@ -36,6 +36,18 @@ func (r *testAuthRepository) SavePasswordHash(_ context.Context, hash []byte) er
 	r.hash = hash
 	return nil
 }
+func (r *testAuthRepository) ReplacePasswordHashAndSessions(_ context.Context, currentHash, newHash []byte, tokenHash string, expires time.Time) error {
+	if len(r.hash) == 0 {
+		return auth.ErrNotInitialized
+	}
+	if string(r.hash) != string(currentHash) {
+		return auth.ErrInvalidCurrentPassword
+	}
+	r.hash = newHash
+	clear(r.sessions)
+	r.sessions[tokenHash] = expires
+	return nil
+}
 func (r *testAuthRepository) CreateSession(_ context.Context, token string, expires time.Time) error {
 	r.sessions[token] = expires
 	return nil
@@ -108,6 +120,44 @@ func TestRouterUsesConsistentSecureSessionCookies(t *testing.T) {
 			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 		}
 	})
+
+	t.Run("change password", func(t *testing.T) {
+		manager := testAuth(t)
+		router := newTestRouter(t, manager, true)
+		token, err := manager.Login(context.Background(), "password123")
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		response := performJSONRequest(router, http.MethodPut, "/api/v1/auth/password", `{"current_password":"password123","new_password":"new-password123"}`, &http.Cookie{Name: auth.SessionCookie, Value: token})
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+		replacement := assertSessionCookie(t, response, true, false)
+		valid, err := manager.Authenticate(context.Background(), token)
+		if err != nil || valid {
+			t.Fatalf("old session valid = %v, err = %v", valid, err)
+		}
+		valid, err = manager.Authenticate(context.Background(), replacement.Value)
+		if err != nil || !valid {
+			t.Fatalf("replacement session valid = %v, err = %v", valid, err)
+		}
+		if _, err := manager.Login(context.Background(), "password123"); err != auth.ErrUnauthenticated {
+			t.Fatalf("old password login error = %v, want %v", err, auth.ErrUnauthenticated)
+		}
+	})
+
+	t.Run("change password rejects invalid current password", func(t *testing.T) {
+		manager := testAuth(t)
+		router := newTestRouter(t, manager, false)
+		token, err := manager.Login(context.Background(), "password123")
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		response := performJSONRequest(router, http.MethodPut, "/api/v1/auth/password", `{"current_password":"wrong-password","new_password":"new-password123"}`, &http.Cookie{Name: auth.SessionCookie, Value: token})
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_current_password"`) {
+			t.Fatalf("response = %d %s", response.Code, response.Body.String())
+		}
+	})
 }
 
 func TestRouterRejectsInvalidJSONBodies(t *testing.T) {
@@ -174,7 +224,7 @@ func performJSONRequest(handler http.Handler, method, path, body string, cookie 
 	return response
 }
 
-func assertSessionCookie(t *testing.T, response *httptest.ResponseRecorder, secure, deleted bool) {
+func assertSessionCookie(t *testing.T, response *httptest.ResponseRecorder, secure, deleted bool) *http.Cookie {
 	t.Helper()
 	var session *http.Cookie
 	for _, cookie := range response.Result().Cookies() {
@@ -192,6 +242,7 @@ func assertSessionCookie(t *testing.T, response *httptest.ResponseRecorder, secu
 	if deleted != (session.MaxAge < 0) {
 		t.Fatalf("cookie MaxAge = %d, deleted = %v", session.MaxAge, deleted)
 	}
+	return session
 }
 func addTestCookie(t *testing.T, req *http.Request, manager *auth.Manager) {
 	token, err := manager.Login(context.Background(), "password123")

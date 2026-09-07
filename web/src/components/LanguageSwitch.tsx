@@ -3,13 +3,11 @@ import { useLocale } from "../i18n";
 
 export function LanguageSwitch() {
   const { locale, setLocale, t } = useLocale();
+  const nextLocale = locale === "zh-CN" ? "en" : "zh-CN";
+  const label = nextLocale === "en" ? t("language.switchToEnglish") : t("language.switchToChinese");
   return (
-    <div className="language-control">
-      <Languages size={15} aria-hidden="true" />
-      <div className="language-switch" role="group" aria-label={t("language.label")}>
-        <button type="button" className={locale === "zh-CN" ? "active" : ""} aria-pressed={locale === "zh-CN"} onClick={() => setLocale("zh-CN")}>{t("language.chinese")}</button>
-        <button type="button" className={locale === "en" ? "active" : ""} aria-pressed={locale === "en"} onClick={() => setLocale("en")}>{t("language.english")}</button>
-      </div>
-    </div>
+    <button type="button" className="icon-button language-button" onClick={() => setLocale(nextLocale)} aria-label={label} title={label}>
+      <Languages size={17} aria-hidden="true" />
+    </button>
   );
 }

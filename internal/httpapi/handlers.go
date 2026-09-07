@@ -21,6 +21,11 @@ type authRequest struct {
 	Password string `json:"password"`
 }
 
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 func authStatusHandler(manager *auth.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if manager == nil {
@@ -80,6 +85,22 @@ func authLoginHandler(manager *auth.Manager, secure bool, limiter *authAttemptLi
 	}
 }
 
+func authChangePasswordHandler(manager *auth.Manager, secure bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var request changePasswordRequest
+		if !decodeJSON(c, &request) {
+			return
+		}
+		token, err := manager.ChangePassword(c.Request.Context(), request.CurrentPassword, request.NewPassword)
+		if err != nil {
+			writeAuthError(c, err)
+			return
+		}
+		setSessionCookie(c, token, secure)
+		c.Status(http.StatusNoContent)
+	}
+}
+
 func authLogoutHandler(manager *auth.Manager, secure bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token, _ := c.Cookie(auth.SessionCookie)
@@ -99,9 +120,13 @@ func setSessionCookie(c *gin.Context, token string, secure bool) {
 func writeAuthError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, auth.ErrInvalidPassword):
-		writeError(c, http.StatusBadRequest, "invalid_password", "password must be 8 to 256 characters")
+		writeError(c, http.StatusBadRequest, "invalid_password", "password must contain at least 8 characters and no more than 72 UTF-8 bytes")
+	case errors.Is(err, auth.ErrInvalidCurrentPassword):
+		writeError(c, http.StatusBadRequest, "invalid_current_password", "current password is invalid")
 	case errors.Is(err, auth.ErrAlreadySetup):
 		writeError(c, http.StatusConflict, "already_initialized", "administrator is already configured")
+	case errors.Is(err, auth.ErrNotInitialized):
+		writeError(c, http.StatusConflict, "not_initialized", "administrator is not configured")
 	case errors.Is(err, auth.ErrUnauthenticated):
 		writeError(c, http.StatusUnauthorized, "unauthorized", "password is invalid")
 	default:

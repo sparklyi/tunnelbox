@@ -126,3 +126,36 @@ func TestDeleteExpiredSessions(t *testing.T) {
 		}
 	}
 }
+
+func TestReplacePasswordHashAndSessions(t *testing.T) {
+	db, err := Open(context.Background(), filepath.Join(t.TempDir(), "tunnelbox.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	store := NewStore(db)
+	ctx := context.Background()
+	if err := store.EnsureWorkspace(ctx, "default", "Default"); err != nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	if err := store.SavePasswordHash(ctx, []byte("old-hash")); err != nil {
+		t.Fatalf("save password: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.CreateSession(ctx, "old-session", now.Add(time.Hour)); err != nil {
+		t.Fatalf("create old session: %v", err)
+	}
+	if err := store.ReplacePasswordHashAndSessions(ctx, []byte("old-hash"), []byte("new-hash"), "new-session", now.Add(time.Hour)); err != nil {
+		t.Fatalf("replace password and sessions: %v", err)
+	}
+	hash, err := store.PasswordHash(ctx)
+	if err != nil || string(hash) != "new-hash" {
+		t.Fatalf("password hash = %q, err = %v", hash, err)
+	}
+	for token, wantValid := range map[string]bool{"old-session": false, "new-session": true} {
+		valid, err := store.SessionValid(ctx, token, now)
+		if err != nil || valid != wantValid {
+			t.Fatalf("session %q valid = %v, err = %v", token, valid, err)
+		}
+	}
+}

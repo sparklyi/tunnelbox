@@ -135,7 +135,8 @@ Docker 构建从按 digest 固定的上游镜像复制 `cloudflared`，不使用
 完整 API 契约见 [`docs/openapi.yaml`](docs/openapi.yaml)。部署接口返回 `202`，客户端通过
 `/api/v1/operations/:id` 轮询进度。首次使用调用 `/api/v1/auth/setup` 创建密码，之后调用
 `/api/v1/auth/login` 登录；服务端会设置 HttpOnly、SameSite=Lax 会话 Cookie，并根据
-`TUNNELBOX_COOKIE_SECURE` 设置其 `Secure` 属性。
+`TUNNELBOX_COOKIE_SECURE` 配置其 `Secure` 属性。登录后的管理员可通过
+`PUT /api/v1/auth/password` 修改密码；修改后其他会话失效，当前会话会被替换并继续有效。
 
 ```sh
 # Quick：不需要域名或 Cloudflare 配置
