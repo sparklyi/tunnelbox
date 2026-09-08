@@ -39,6 +39,40 @@ func (s *Store) SavePasswordHash(ctx context.Context, hash []byte) error {
 	return nil
 }
 
+func (s *Store) ReplacePasswordHashAndSessions(ctx context.Context, currentHash, newHash []byte, tokenHash string, expiresAt time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin password change: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE workspace SET admin_password_hash = ?, updated_at = ?
+		WHERE admin_password_hash = ?`, string(newHash), time.Now().UTC().Format(time.RFC3339Nano), string(currentHash))
+	if err != nil {
+		return fmt.Errorf("replace administrator password: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check administrator password: %w", err)
+	}
+	if affected == 0 {
+		return auth.ErrInvalidCurrentPassword
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_session`); err != nil {
+		return fmt.Errorf("revoke authentication sessions: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO auth_session (token_hash, expires_at, created_at) VALUES (?, ?, ?)`,
+		tokenHash, expiresAt.UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("create replacement authentication session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit password change: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) CreateSession(ctx context.Context, tokenHash string, expiresAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO auth_session (token_hash, expires_at, created_at) VALUES (?, ?, ?)`,

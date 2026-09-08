@@ -8,7 +8,6 @@ import {
   Info,
   LayoutList,
   LockKeyhole,
-  LogOut,
   Plus,
   RefreshCw,
   Settings2,
@@ -18,7 +17,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, request } from "./api/client";
 import type { AuthState, Connector, IntegrationStatus, Operation, Service, Zone } from "./api/types";
 import { AboutDialog } from "./components/AboutDialog";
+import { AccountMenu } from "./components/AccountMenu";
 import { AuthScreen } from "./components/AuthScreen";
+import { ChangePasswordDialog } from "./components/ChangePasswordDialog";
 import { DeleteDialog } from "./components/DeleteDialog";
 import { GuideDialog } from "./components/GuideDialog";
 import { IntegrationDialog } from "./components/IntegrationDialog";
@@ -87,6 +88,7 @@ function App() {
   const [deleteTarget, setDeleteTarget] = useState<Service | null>(null);
   const [guideOpen, setGuideOpen] = useState(() => !hasDismissedOnboarding());
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
   const loadData = useCallback(
     async (showRefresh = false): Promise<boolean> => {
@@ -278,15 +280,17 @@ function App() {
             <button type="button" className="nav-item" onClick={() => setGuideOpen(true)} aria-label={t("app.guide")} title={t("app.guide")}><CircleHelp size={16} /><span>{t("app.guide")}</span></button>
           </nav>
           <div className="sidebar-bottom">
-            <LanguageSwitch />
-            <button type="button" className="sidebar-logout" onClick={() => void logout()} aria-label={t("app.logout")} title={t("app.logout")}><LogOut size={15} /><span>{t("app.logout")}</span></button>
             <div className="sidebar-footnote"><LockKeyhole size={15} /><span>{t("app.policyNote")}</span></div>
           </div>
         </aside>
 
         <main className="main-content">
           <header className="topbar">
-            <div><p className="eyebrow">{t("app.workspacePath")}</p><h1>{t("app.publishTitle")}</h1></div>
+            <div className="topbar-copy"><p className="eyebrow">{t("app.workspacePath")}</p><h1>{t("app.publishTitle")}</h1></div>
+            <div className="topbar-actions">
+              <LanguageSwitch />
+              <AccountMenu onChangePassword={() => setChangePasswordOpen(true)} onLogout={() => void logout()} />
+            </div>
           </header>
 
           <div className="toast-region" aria-live="polite" aria-atomic="true">
@@ -339,6 +343,7 @@ function App() {
           {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
           {guideOpen && <GuideDialog onClose={closeGuide} onQuick={startQuick} onConfigure={startConfiguration} />}
           {integrationOpen && <IntegrationDialog initial={integration} zones={zones} onClose={() => setIntegrationOpen(false)} onSaved={(next) => { setIntegration(next); setIntegrationOpen(false); void loadData(true); }} />}
+          {changePasswordOpen && <ChangePasswordDialog onClose={() => setChangePasswordOpen(false)} onSaved={() => { setChangePasswordOpen(false); setNotice(t("notice.passwordChanged")); }} />}
           {editor && <ServiceDialog key={editor === "new" ? "new" : editor.id} value={editor === "new" ? null : editor} onClose={() => setEditor(null)} onSaved={(saved) => { setEditor(null); setServices((current) => editor === "new" ? [...current, saved] : current.map((item) => item.id === saved.id ? saved : item)); setNotice(t(editor === "new" ? "notice.serviceCreated" : "notice.serviceUpdated")); }} />}
           {deleteTarget && <DeleteDialog value={deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={() => void remove(deleteTarget)} />}
         </AnimatePresence>

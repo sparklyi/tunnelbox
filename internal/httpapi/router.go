@@ -103,6 +103,7 @@ func NewRouter(deps Dependencies) (*gin.Engine, error) {
 	api.GET("/auth/status", authStatusHandler(deps.Auth))
 	api.POST("/auth/setup", authSetupHandler(deps.Auth, deps.SecureCookies, authLimiter))
 	api.POST("/auth/login", authLoginHandler(deps.Auth, deps.SecureCookies, authLimiter))
+	api.PUT("/auth/password", authChangePasswordHandler(deps.Auth, deps.SecureCookies))
 	api.POST("/auth/logout", authLogoutHandler(deps.Auth, deps.SecureCookies))
 	api.PUT("/integrations/cloudflare", configureCloudflareHandler(deps.Cloudflare))
 	api.GET("/integrations/cloudflare/status", cloudflareStatusHandler(deps.Cloudflare))

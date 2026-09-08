@@ -141,7 +141,8 @@ See [`docs/openapi.yaml`](docs/openapi.yaml) for the complete API contract. Depl
 returns `202 Accepted`; poll `/api/v1/operations/:id` for progress. Authenticate by first
 calling `/api/v1/auth/setup` (first run) or `/api/v1/auth/login`; the server sets an
 HttpOnly, SameSite=Lax session cookie and applies its `Secure` attribute from
-`TUNNELBOX_COOKIE_SECURE`.
+`TUNNELBOX_COOKIE_SECURE`. An authenticated administrator can change the password with
+`PUT /api/v1/auth/password`; this revokes other sessions and replaces the current session.
 
 ```sh
 curl -X POST http://127.0.0.1:8080/api/v1/services \
