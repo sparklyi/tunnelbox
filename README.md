@@ -63,6 +63,11 @@ or public bind, protect the endpoint with a reverse proxy or network policy; the
 application itself uses the same password login. Set `TUNNELBOX_COOKIE_SECURE=true` when
 the browser reaches TunnelBox through HTTPS.
 
+Sign-in requires a browser check: the console solves a short proof-of-work challenge
+before every login attempt, and the API refuses a password without a matching
+single-use pass. The signing key is generated once at `data/bouncer.key` (mode 0600)
+and never leaves the machine.
+
 ## First deployment
 
 1. Make sure the machine or container running TunnelBox can reach the Origin. The
@@ -119,6 +124,7 @@ All settings are environment variables; the defaults are suitable for a local ch
 | `TUNNELBOX_LISTEN` | `127.0.0.1:8080` | HTTP bind address |
 | `TUNNELBOX_COOKIE_SECURE` | `false` | Set the session Cookie `Secure` attribute; enable when browsers connect over HTTPS |
 | `TUNNELBOX_DATABASE` | `data/tunnelbox.db` | SQLite file |
+| `TUNNELBOX_BOUNCER_KEY` | `data/bouncer.key` | Human-check signing key (created on first start) |
 | `TUNNELBOX_CLOUDFLARE_TOKEN_FILE` | `data/cloudflare.token` | Cloudflare API Token file |
 | `TUNNELBOX_CLOUDFLARED_BINARY` | `cloudflared` | Connector executable |
 | `TUNNELBOX_CLOUDFLARED_DATA_DIR` | `data/cloudflared` | Connector state directory |

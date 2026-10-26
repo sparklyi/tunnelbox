@@ -13,6 +13,7 @@ import (
 	"github.com/sparklyi/tunnelbox/internal/config"
 	"github.com/sparklyi/tunnelbox/internal/connector"
 	"github.com/sparklyi/tunnelbox/internal/httpapi"
+	"github.com/sparklyi/tunnelbox/internal/humancheck"
 	"github.com/sparklyi/tunnelbox/internal/operation"
 	"github.com/sparklyi/tunnelbox/internal/probe"
 	"github.com/sparklyi/tunnelbox/internal/provision"
@@ -48,6 +49,11 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	}
 	services := service.NewUseCase(store.Services(), workspaceID)
 	authentication := auth.NewManager(store)
+	humanCheck, err := humancheck.NewGate(cfg.BouncerKeyFile)
+	if err != nil {
+		return fmt.Errorf("build human check: %w", err)
+	}
+	defer func() { _ = humanCheck.Close() }()
 	operations := operation.NewManager(store.Operations())
 
 	integration, err := cloudflare.NewIntegration(ctx, store, workspaceID, cfg.CloudflareTokenFile, "", nil)
@@ -78,7 +84,7 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	}
 	router, err := httpapi.NewRouter(httpapi.Dependencies{
 		Services: services, Operations: operations, Deployer: deployer, Stopper: deployer, Deleter: deployer, Cloudflare: integration,
-		Connectors: connectors, Auth: authentication, SecureCookies: cfg.SecureCookies, Logger: logger,
+		Connectors: connectors, Auth: authentication, Bouncer: humanCheck, SecureCookies: cfg.SecureCookies, Logger: logger,
 		Readiness: db.PingContext, WebDir: cfg.WebDir,
 	})
 	if err != nil {
