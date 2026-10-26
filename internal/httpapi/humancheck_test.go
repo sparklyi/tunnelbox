@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sparklyi/bouncer"
+	"github.com/sparklyi/bouncer/httpx"
 	"github.com/sparklyi/bouncer/pow"
 )
 
@@ -22,7 +23,8 @@ func TestLoginRequiresHumanCheck(t *testing.T) {
 	t.Cleanup(func() { _ = gate.Close() })
 
 	router, err := NewRouter(Dependencies{
-		Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Auth: testAuth(t), Bouncer: gate,
+		Services: &fakeServiceActions{}, Operations: fakeOperationReader{}, Auth: testAuth(t),
+		HumanCheck: httpx.NewGuard(gate),
 	})
 	if err != nil {
 		t.Fatalf("build router: %v", err)

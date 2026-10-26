@@ -3,7 +3,6 @@ import { ArrowRight, CircleAlert, Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { request } from "../api/client";
-import { solveChallenge } from "../captcha/solver";
 import type { AuthState } from "../api/types";
 import { useLocale } from "../i18n";
 import { LanguageSwitch } from "./LanguageSwitch";
@@ -41,7 +40,8 @@ export function AuthScreen({ state, onAuthenticated, onAbout, error }: AuthScree
       // password to guess yet, and a failing check could lock the operator out.
       setVerifying(true);
       try {
-        await solveChallenge();
+        if (!window.bouncer) throw new Error("bouncer widget is not loaded");
+        await window.bouncer.verify();
       } catch {
         setMessage(t("error.humanCheck"));
         setSubmitting(false);
