@@ -24,7 +24,10 @@ func New(path string, secure bool) (*Check, error) {
 		return nil, err
 	}
 	return &Check{
-		Guard: httpx.NewGuard(gate, httpx.WithSecure(secure)),
+		// Every login attempt must pay for a fresh challenge: a pass that stays
+		// valid for ten minutes would let one solve amortise thousands of
+		// password guesses.
+		Guard: httpx.NewGuard(gate, httpx.WithSecure(secure), httpx.WithPassSingleUse()),
 		gate:  gate,
 	}, nil
 }
