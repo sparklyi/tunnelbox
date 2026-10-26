@@ -90,7 +90,8 @@ func authMiddleware(manager *auth.Manager) gin.HandlerFunc {
 
 func isPublicPath(path string) bool {
 	return path == "/healthz" || path == "/readyz" || path == "/" || path == "/assets" || strings.HasPrefix(path, "/assets/") ||
-		path == "/api/v1/auth/status" || path == "/api/v1/auth/setup" || path == "/api/v1/auth/login"
+		path == "/api/v1/auth/status" || path == "/api/v1/auth/setup" || path == "/api/v1/auth/login" ||
+		path == "/_bouncer/challenge" || path == "/_bouncer/verify"
 }
 
 func requestID(c *gin.Context) string {

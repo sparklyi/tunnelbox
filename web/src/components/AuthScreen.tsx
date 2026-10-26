@@ -3,6 +3,7 @@ import { ArrowRight, CircleAlert, Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { request } from "../api/client";
+import { solveChallenge } from "../captcha/solver";
 import type { AuthState } from "../api/types";
 import { useLocale } from "../i18n";
 import { LanguageSwitch } from "./LanguageSwitch";
@@ -21,6 +22,7 @@ export function AuthScreen({ state, onAuthenticated, onAbout, error }: AuthScree
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [verifying, setVerifying] = useState(false);
   const [message, setMessage] = useState("");
 
   useEffect(() => setMessage(""), [locale]);
@@ -33,6 +35,21 @@ export function AuthScreen({ state, onAuthenticated, onAbout, error }: AuthScree
       return;
     }
     setSubmitting(true);
+    if (!setup) {
+      // The server accepts a login only with a fresh pass cookie, so every
+      // attempt pays for one challenge. Setup is exempt: a new install has no
+      // password to guess yet, and a failing check could lock the operator out.
+      setVerifying(true);
+      try {
+        await solveChallenge();
+      } catch {
+        setMessage(t("error.humanCheck"));
+        setSubmitting(false);
+        setVerifying(false);
+        return;
+      }
+      setVerifying(false);
+    }
     try {
       await request<void>(setup ? "/api/v1/auth/setup" : "/api/v1/auth/login", {
         method: "POST",
@@ -58,7 +75,7 @@ export function AuthScreen({ state, onAuthenticated, onAbout, error }: AuthScree
         <label>{t("auth.password")}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} maxLength={72} autoComplete={setup ? "new-password" : "current-password"} autoFocus required /></label>
         {setup && <label>{t("auth.confirmPassword")}<input type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} minLength={8} maxLength={72} autoComplete="new-password" required /></label>}
         {(message || error) && <p className="form-error"><CircleAlert size={16} />{message || error}</p>}
-        <button type="submit" className="button button-primary auth-submit" disabled={submitting}>{submitting ? <Spinner /> : <ArrowRight size={16} />}{submitting ? t("auth.wait") : t(setup ? "auth.setupAction" : "auth.loginAction")}</button>
+        <button type="submit" className="button button-primary auth-submit" disabled={submitting}>{submitting ? <Spinner /> : <ArrowRight size={16} />}{submitting ? (verifying ? t("auth.verifying") : t("auth.wait")) : t(setup ? "auth.setupAction" : "auth.loginAction")}</button>
         <button type="button" className="auth-about" onClick={onAbout}><Info size={15} />{t("common.learnMore")}</button>
       </motion.form>
     </main>
