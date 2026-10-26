@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sparklyi/bouncer"
 	"github.com/sparklyi/bouncer/httpx"
 	"github.com/sparklyi/tunnelbox/internal/auth"
 	"github.com/sparklyi/tunnelbox/internal/operation"
@@ -65,7 +64,7 @@ func authSetupHandler(manager *auth.Manager, secure bool, limiter *authAttemptLi
 	}
 }
 
-func authLoginHandler(manager *auth.Manager, secure bool, limiter *authAttemptLimiter, gate *bouncer.Gate) gin.HandlerFunc {
+func authLoginHandler(manager *auth.Manager, secure bool, limiter *authAttemptLimiter, guard *httpx.Guard) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var request authRequest
 		if !decodeJSON(c, &request) {
@@ -76,8 +75,8 @@ func authLoginHandler(manager *auth.Manager, secure bool, limiter *authAttemptLi
 			writeError(c, http.StatusTooManyRequests, "rate_limited", "too many authentication attempts")
 			return
 		}
-		if gate != nil {
-			if _, err := httpx.VerifyPass(gate, c.Request, httpx.WithSecure(secure)); err != nil {
+		if guard != nil {
+			if _, err := guard.RequirePass(c.Request); err != nil {
 				writeError(c, http.StatusForbidden, "challenge_required", "human verification required")
 				return
 			}

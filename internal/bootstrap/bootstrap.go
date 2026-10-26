@@ -49,7 +49,7 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	}
 	services := service.NewUseCase(store.Services(), workspaceID)
 	authentication := auth.NewManager(store)
-	humanCheck, err := humancheck.NewGate(cfg.BouncerKeyFile)
+	humanCheck, err := humancheck.New(cfg.BouncerKeyFile, cfg.SecureCookies)
 	if err != nil {
 		return fmt.Errorf("build human check: %w", err)
 	}
@@ -84,7 +84,7 @@ func Run(ctx context.Context, logger *slog.Logger) error {
 	}
 	router, err := httpapi.NewRouter(httpapi.Dependencies{
 		Services: services, Operations: operations, Deployer: deployer, Stopper: deployer, Deleter: deployer, Cloudflare: integration,
-		Connectors: connectors, Auth: authentication, Bouncer: humanCheck, SecureCookies: cfg.SecureCookies, Logger: logger,
+		Connectors: connectors, Auth: authentication, HumanCheck: humanCheck.Guard, SecureCookies: cfg.SecureCookies, Logger: logger,
 		Readiness: db.PingContext, WebDir: cfg.WebDir,
 	})
 	if err != nil {

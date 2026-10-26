@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sparklyi/bouncer"
 	"github.com/sparklyi/bouncer/httpx"
 	"github.com/sparklyi/tunnelbox/internal/auth"
 	"github.com/sparklyi/tunnelbox/internal/operation"
@@ -68,7 +67,7 @@ type Dependencies struct {
 	Cloudflare    CloudflareIntegration
 	Connectors    ConnectorLister
 	Auth          *auth.Manager
-	Bouncer       *bouncer.Gate
+	HumanCheck    *httpx.Guard
 	SecureCookies bool
 	Logger        *slog.Logger
 	Readiness     func(context.Context) error
@@ -103,14 +102,12 @@ func NewRouter(deps Dependencies) (*gin.Engine, error) {
 
 	api := router.Group("/api/v1")
 	authLimiter := newAuthAttemptLimiter(5, 5*time.Minute)
-	if deps.Bouncer != nil {
-		cookieOpts := []httpx.Option{httpx.WithSecure(deps.SecureCookies)}
-		router.POST("/_bouncer/challenge", gin.WrapH(httpx.ChallengeHandler(deps.Bouncer)))
-		router.POST("/_bouncer/verify", gin.WrapH(httpx.VerifyHandler(deps.Bouncer, cookieOpts...)))
+	if deps.HumanCheck != nil {
+		router.Any(deps.HumanCheck.Prefix()+"/*any", gin.WrapH(deps.HumanCheck.Handler()))
 	}
 	api.GET("/auth/status", authStatusHandler(deps.Auth))
 	api.POST("/auth/setup", authSetupHandler(deps.Auth, deps.SecureCookies, authLimiter))
-	api.POST("/auth/login", authLoginHandler(deps.Auth, deps.SecureCookies, authLimiter, deps.Bouncer))
+	api.POST("/auth/login", authLoginHandler(deps.Auth, deps.SecureCookies, authLimiter, deps.HumanCheck))
 	api.PUT("/auth/password", authChangePasswordHandler(deps.Auth, deps.SecureCookies))
 	api.POST("/auth/logout", authLogoutHandler(deps.Auth, deps.SecureCookies))
 	api.PUT("/integrations/cloudflare", configureCloudflareHandler(deps.Cloudflare))
